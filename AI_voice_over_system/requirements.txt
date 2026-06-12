@@ -1,0 +1,9 @@
+streamlit
+openai
+yt-dlp[default]
+python-dotenv
+pydub
+tiktoken
+pandas
+requests
+tenacity

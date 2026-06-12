@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.streamlit/secrets.toml
+data/jobs/
+data/voice_samples/
+data/logs/
+cookies.txt
+youtube_cookies.txt

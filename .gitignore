@@ -1,0 +1,48 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python caches and build output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# Video files
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.m4v
+*.mpeg
+*.mpg
+
+# Generated MP3 audio
+*.mp3
+
+# Application runtime data
+AI_voice_over_system/data/jobs/
+AI_voice_over_system/data/logs/
+AI_voice_over_system/data/voice_samples/
+
+# Local Streamlit secrets and YouTube cookies
+**/.streamlit/secrets.toml
+cookies.txt
+youtube_cookies.txt
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Keep environment configuration trackable by explicit request.
+!.env
+!**/.env
+!.env.example
+!**/.env.example
