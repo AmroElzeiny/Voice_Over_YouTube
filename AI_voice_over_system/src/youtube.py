@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import shutil
 import subprocess
@@ -106,6 +107,63 @@ def _append_command_log(log_path: Path | None, args: list[str], stdout: str, std
             log_file.write(stderr + "\n")
 
 
+def _access_args(settings: Settings) -> list[str]:
+    args: list[str] = []
+    js_runtime = _detect_js_runtime(settings)
+    if js_runtime:
+        args.extend(["--js-runtimes", js_runtime])
+    if settings.yt_dlp_cookies_file:
+        if not settings.yt_dlp_cookies_file.exists():
+            raise YouTubeError("ملف YouTube cookies غير موجود.")
+        args.extend(["--cookies", str(settings.yt_dlp_cookies_file)])
+    elif settings.yt_dlp_cookies_from_browser:
+        args.extend(["--cookies-from-browser", settings.yt_dlp_cookies_from_browser])
+    return args
+
+
+def probe_youtube_duration(url: str, settings: Settings) -> float:
+    """Read YouTube metadata without downloading the media file."""
+    if not validate_youtube_url(url):
+        raise YouTubeError("رابط YouTube غير صالح.")
+    if not yt_dlp_available():
+        raise YouTubeError("حزمة yt-dlp غير مثبتة.")
+
+    args = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--no-playlist",
+        "--skip-download",
+        "--dump-single-json",
+        "--no-warnings",
+        *_access_args(settings),
+        url,
+    ]
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise YouTubeError("تعذر قراءة مدة فيديو YouTube.") from exc
+    if result.returncode != 0:
+        _event, message = _classify_failure(result.stderr + "\n" + result.stdout)
+        raise YouTubeError(message)
+    try:
+        payload = json.loads(result.stdout)
+        duration = float(payload.get("duration") or 0)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise YouTubeError("لم أتمكن من معرفة مدة فيديو YouTube.") from exc
+    if duration <= 0:
+        raise YouTubeError("مدة فيديو YouTube غير متاحة.")
+    return duration
+
+
 def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_path: Path | None = None) -> Path:
     if not validate_youtube_url(url):
         raise YouTubeError("رابط YouTube غير صالح.")
@@ -135,14 +193,7 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
     ]
 
     js_runtime = _detect_js_runtime(settings)
-    if js_runtime:
-        args.extend(["--js-runtimes", js_runtime])
-    if settings.yt_dlp_cookies_file:
-        if not settings.yt_dlp_cookies_file.exists():
-            raise YouTubeError("ملف YouTube cookies المضبوط غير موجود.")
-        args.extend(["--cookies", str(settings.yt_dlp_cookies_file)])
-    elif settings.yt_dlp_cookies_from_browser:
-        args.extend(["--cookies-from-browser", settings.yt_dlp_cookies_from_browser])
+    args.extend(_access_args(settings))
     args.append(url)
 
     log_event(

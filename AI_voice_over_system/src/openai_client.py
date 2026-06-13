@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import calendar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -40,36 +39,58 @@ def response_to_dict(response: Any) -> dict[str, Any]:
     return result
 
 
-def get_monthly_spend_usd(settings: Settings) -> float | None:
-    """Read current month spend from the OpenAI Organization Costs API when available.
-
-    The response shape has changed over time, so the parser intentionally accepts a
-    few official variants and returns None instead of failing the app.
-    """
+def get_monthly_spend_status(settings: Settings) -> dict[str, Any]:
+    """Read current-month organization spend and return a UI-friendly status."""
     if not settings.openai_admin_key:
-        return None
+        return {"amount_usd": None, "status": "admin_key_missing"}
 
     now = datetime.now(timezone.utc)
     start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-    last_day = calendar.monthrange(now.year, now.month)[1]
-    end = datetime(now.year, now.month, last_day, 23, 59, 59, tzinfo=timezone.utc)
 
     headers = {"Authorization": f"Bearer {settings.openai_admin_key}"}
-    params = {"start_time": int(start.timestamp()), "end_time": int(end.timestamp())}
+    params: dict[str, Any] = {
+        "start_time": int(start.timestamp()),
+        "end_time": int(now.timestamp()) + 1,
+        "bucket_width": "1d",
+        "limit": 31,
+    }
+    total = 0.0
+    found = False
 
     try:
-        response = requests.get(
-            "https://api.openai.com/v1/organization/costs",
-            headers=headers,
-            params=params,
-            timeout=20,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception:
-        return None
+        while True:
+            response = requests.get(
+                "https://api.openai.com/v1/organization/costs",
+                headers=headers,
+                params=params,
+                timeout=20,
+            )
+            if response.status_code in {401, 403}:
+                return {"amount_usd": None, "status": "admin_key_rejected"}
+            response.raise_for_status()
+            payload = response.json()
+            page_total = _sum_cost_payload(payload)
+            if page_total is not None:
+                total += page_total
+                found = True
+            next_page = payload.get("next_page") if isinstance(payload, dict) else None
+            if not (isinstance(payload, dict) and payload.get("has_more") and next_page):
+                break
+            params["page"] = next_page
+    except requests.RequestException:
+        return {"amount_usd": None, "status": "request_failed"}
+    except (TypeError, ValueError):
+        return {"amount_usd": None, "status": "invalid_response"}
 
-    return _sum_cost_payload(payload)
+    if not found:
+        return {"amount_usd": 0.0, "status": "ok"}
+    return {"amount_usd": total, "status": "ok"}
+
+
+def get_monthly_spend_usd(settings: Settings) -> float | None:
+    status = get_monthly_spend_status(settings)
+    amount = status.get("amount_usd")
+    return float(amount) if isinstance(amount, (int, float)) else None
 
 
 def _sum_cost_payload(payload: Any) -> float | None:
@@ -94,4 +115,3 @@ def _sum_cost_payload(payload: Any) -> float | None:
 
     walk(payload)
     return total if found else None
-

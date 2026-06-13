@@ -198,6 +198,7 @@ class Settings:
     gpt_4o_mini_output_usd_per_1m: float
     gpt_4o_mini_tts_text_input_usd_per_1m: float
     gpt_4o_mini_tts_audio_output_usd_per_1m: float
+    openai_tts_estimated_usd_per_min: float
     openai_monthly_budget_usd: float | None
     openai_manual_available_balance_usd: float | None
     cost_safety_buffer_percent: float
@@ -293,6 +294,7 @@ def load_settings() -> Settings:
             ["OPENAI_TTS_AUDIO_OUTPUT_USD_PER_1M", "GPT_4O_MINI_TTS_AUDIO_OUTPUT_USD_PER_1M"],
             12.00,
         ),
+        openai_tts_estimated_usd_per_min=setting_float("OPENAI_TTS_ESTIMATED_USD_PER_MIN", 0.015),
         openai_monthly_budget_usd=optional_float("OPENAI_MONTHLY_BUDGET_USD"),
         openai_manual_available_balance_usd=optional_float("OPENAI_MANUAL_AVAILABLE_BALANCE_USD"),
         cost_safety_buffer_percent=setting_float("COST_SAFETY_BUFFER_PERCENT", 15),

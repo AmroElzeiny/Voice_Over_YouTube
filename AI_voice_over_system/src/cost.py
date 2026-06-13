@@ -53,11 +53,9 @@ def estimate_cost(
     )
 
     tts_text_tokens = int(source_token_count * 1.20) * language_count
-    estimated_audio_tokens = int(duration_seconds * 50) * language_count
-    tts = (
-        tts_text_tokens / 1_000_000 * settings.gpt_4o_mini_tts_text_input_usd_per_1m
-        + estimated_audio_tokens / 1_000_000 * settings.gpt_4o_mini_tts_audio_output_usd_per_1m
-    )
+    tts_text = tts_text_tokens / 1_000_000 * settings.gpt_4o_mini_tts_text_input_usd_per_1m
+    tts_audio = minutes * language_count * settings.openai_tts_estimated_usd_per_min
+    tts = tts_text + tts_audio
 
     subtotal = transcription + translation + tts
     safety_buffer = subtotal * (settings.cost_safety_buffer_percent / 100)
@@ -71,7 +69,7 @@ def estimate_cost(
         "translation_input_tokens_estimated": translation_input_tokens,
         "translation_output_tokens_estimated": translation_output_tokens,
         "tts_text_tokens_estimated": tts_text_tokens,
-        "tts_audio_tokens_estimated": estimated_audio_tokens,
+        "tts_audio_usd_estimated": tts_audio,
         "transcription_usd": transcription,
         "translation_usd": translation,
         "tts_usd": tts,
@@ -106,4 +104,3 @@ def budget_status(settings: Settings, estimated_cost: dict[str, Any], monthly_sp
         }
 
     return {"available_usd": None, "allowed": True, "source": "none"}
-

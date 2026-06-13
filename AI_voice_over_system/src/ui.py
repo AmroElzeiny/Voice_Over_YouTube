@@ -28,6 +28,28 @@ def setup_page(settings: Settings) -> None:
         h1, h2, h3, h4, h5, h6, p, label, span {
             letter-spacing: 0;
         }
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stMainBlockContainer"],
+        [data-testid="stWidgetLabel"],
+        [data-testid="stAlert"],
+        [data-testid="stMarkdownContainer"],
+        [data-baseweb="popover"],
+        [role="tooltip"] {
+            direction: rtl;
+            text-align: right;
+        }
+        input, textarea, div[contenteditable="true"] {
+            direction: rtl;
+            text-align: right;
+        }
+        [data-testid="stHorizontalBlock"] {
+            direction: rtl;
+        }
+        [data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
+            direction: rtl;
+            text-align: right;
+        }
         div[data-testid="stMetric"] {
             background: #FFFFFF;
             border: 1px solid #E2E8F0;
@@ -77,27 +99,6 @@ def language_label(code: str) -> str:
     return meta.get("label_ar", code)
 
 
-def render_costs(
-    estimate: dict[str, Any],
-    monthly_spend_usd: float | None,
-    budget: dict[str, Any],
-) -> None:
-    cols = st.columns(4)
-    cols[0].metric("تفريغ تقديري", money(estimate.get("transcription_usd")))
-    cols[1].metric("ترجمة تقديرية", money(estimate.get("translation_usd")))
-    cols[2].metric("صوت تقديري", money(estimate.get("tts_usd")))
-    cols[3].metric("الإجمالي التقديري", money(estimate.get("total_usd")))
-
-    lower_cols = st.columns(3)
-    lower_cols[0].metric("مدة تقديرية", f"{float(estimate.get('duration_minutes') or 0):.1f} دقيقة")
-    lower_cols[1].metric("إنفاق الشهر الحالي", money(monthly_spend_usd) if monthly_spend_usd is not None else "غير متاح")
-    available = budget.get("available_usd")
-    lower_cols[2].metric("الرصيد أو الميزانية المتاحة", money(available) if available is not None else "بدون حد مضبوط")
-
-    if not budget.get("allowed", True):
-        st.error("التكلفة المتوقعة أعلى من الرصيد أو الميزانية المتاحة. قلّل عدد اللغات أو اشحن رصيد OpenAI.")
-
-
 def elapsed_text(created_at: str | None) -> str:
     if not created_at:
         return "غير متاح"
@@ -141,15 +142,6 @@ def render_job_status(job: dict[str, Any] | None, dismissed_job_id: str | None =
     if job.get("error_message"):
         st.error(job["error_message"])
 
-    actual = job.get("actual_cost_json") or {}
-    if actual:
-        st.caption("القيم التالية فعلية عندما توفرها الواجهة، وتقديرية عندما لا توفر الواجهة تكلفة دقيقة.")
-        cols = st.columns(3)
-        cols[0].metric("ترجمة فعلية", money(actual.get("translation_usd")))
-        cols[1].metric("تفريغ تقديري", money(actual.get("transcription_usd_estimated")))
-        cols[2].metric("إجمالي معروف + تقديري", money(actual.get("total_known_plus_estimated_usd")))
-
-
 def render_downloads(job: dict[str, Any] | None) -> None:
     if not job:
         return
@@ -176,7 +168,7 @@ def render_downloads(job: dict[str, Any] | None) -> None:
                     data=path.read_bytes(),
                     file_name=path.name,
                     mime="application/x-subrip",
-                    help="ملف الترجمة المتزامنة الجاهز للرفع على YouTube.",
+                    help="ترجمة جاهزة للرفع على YouTube.",
                     key=f"srt-{job['job_id']}-{lang}",
                 )
             else:
@@ -190,7 +182,7 @@ def render_downloads(job: dict[str, Any] | None) -> None:
                     data=path.read_bytes(),
                     file_name=path.name,
                     mime=mime,
-                    help="ملف التعليق الصوتي الجاهز للرفع على YouTube.",
+                    help="صوت جاهز للرفع على YouTube.",
                     key=f"audio-{job['job_id']}-{lang}",
                 )
             else:
@@ -207,7 +199,7 @@ def render_downloads(job: dict[str, Any] | None) -> None:
                     data=path.read_bytes(),
                     file_name=path.name,
                     mime="application/json",
-                    help="تقرير فحص التداخل، الصمت، والمدة النهائية.",
+                    help="يوضح نتيجة فحص الصوت والتوقيت.",
                     key=f"qa-{job['job_id']}-{lang}",
                 )
                 if qa_report.get("warnings"):

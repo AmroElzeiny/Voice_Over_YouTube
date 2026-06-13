@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import io
+import json
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from src import jobs, subtitles, worker
+from src import cost, jobs, preflight, subtitles, worker, youtube
 from src.config import LANGUAGES, TTS_STYLES, load_settings
 from src.logging_utils import close_logging, log_event
+from src.openai_client import get_monthly_spend_status
 from src.tts import (
     VOICE_SAMPLE_TEXT,
     analyze_voiceover_timeline,
@@ -50,6 +53,37 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertTrue(validate_youtube_url("https://www.youtube.com/watch?v=abc123"))
         self.assertTrue(validate_youtube_url("https://youtu.be/abc123"))
         self.assertFalse(validate_youtube_url("https://notyoutube.com/watch?v=abc123"))
+
+    def test_youtube_duration_uses_metadata_without_download(self) -> None:
+        completed = type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": json.dumps({"duration": 125.5}), "stderr": ""},
+        )()
+        with patch("src.youtube.subprocess.run", return_value=completed) as run:
+            duration = youtube.probe_youtube_duration("https://youtu.be/abc123", self.settings)
+        self.assertEqual(duration, 125.5)
+        command = run.call_args.args[0]
+        self.assertIn("--skip-download", command)
+        self.assertIn("--dump-single-json", command)
+
+    def test_uploaded_duration_uses_ffprobe_and_restores_stream(self) -> None:
+        uploaded = io.BytesIO(b"fake media")
+        uploaded.seek(3)
+        with patch("src.preflight.media.probe_duration", return_value=42.0):
+            duration = preflight.probe_uploaded_duration(uploaded, "video.mp4")
+        self.assertEqual(duration, 42.0)
+        self.assertEqual(uploaded.tell(), 3)
+
+    def test_monthly_spend_explains_missing_admin_key(self) -> None:
+        status = get_monthly_spend_status(replace(self.settings, openai_admin_key=""))
+        self.assertEqual(status["status"], "admin_key_missing")
+        self.assertIsNone(status["amount_usd"])
+
+    def test_duration_estimate_uses_configured_tts_cost_per_minute(self) -> None:
+        estimate = cost.estimate_from_minutes(self.settings, 10, 2)
+        expected_audio_cost = 10 * 2 * self.settings.openai_tts_estimated_usd_per_min
+        self.assertAlmostEqual(estimate["tts_audio_usd_estimated"], expected_audio_cost)
 
     def test_logging_redacts_api_keys(self) -> None:
         secret = "configured-test-secret-value-1234567890"
@@ -220,6 +254,11 @@ class CoreBehaviorTests(unittest.TestCase):
         repository_root = project_root.parent
         self.assertIn("ffmpeg", (repository_root / "packages.txt").read_text(encoding="utf-8"))
         self.assertTrue((repository_root / ".streamlit" / "config.toml").exists())
+
+        app_source = (project_root / "app.py").read_text(encoding="utf-8")
+        self.assertNotIn('ui.section_title("تقدير التكلفة")', app_source)
+        self.assertNotIn('ui.section_title("إحصاءات التكلفة")', app_source)
+        self.assertIn('"متابعة وبدء العمل"', app_source)
 
 
 if __name__ == "__main__":

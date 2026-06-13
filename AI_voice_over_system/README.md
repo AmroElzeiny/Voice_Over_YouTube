@@ -154,19 +154,19 @@ The app enforces one active job at a time. Browser refreshes keep showing the cu
 
 If the Streamlit process restarts, previous `queued` or `running` jobs are marked `interrupted`. The UI offers **استكمال من آخر خطوة محفوظة** and reuses checkpoint files when possible.
 
-## Costs And Budget Guard
+## Cost Confirmation And Budget Guard
 
-Costs are shown as **تقديري** unless the API response exposes exact usage. Translation token usage is recorded when available. Transcription and TTS remain estimated when exact costs are not returned by the API.
+The dashboard reads the actual source duration before starting. It then shows one confirmation message containing the duration and estimated total cost. The user must confirm before transcription, translation, or voice generation begins.
 
-If `OPENAI_ADMIN_KEY` is set, the app calls the OpenAI Organization Costs API to estimate current monthly spend. It does not scrape the OpenAI dashboard with browser automation.
+If `OPENAI_ADMIN_KEY` is set, the app calls the OpenAI Organization Costs API to read current monthly spend. This requires an organization admin key; a normal project API key is not enough. The documented Costs API does not return remaining prepaid credit.
 
 Budget checks use these safer options:
 
 - `OPENAI_MONTHLY_BUDGET_USD` with current monthly spend.
-- `OPENAI_MANUAL_AVAILABLE_BALANCE_USD`.
+- `OPENAI_MANUAL_AVAILABLE_BALANCE_USD`, copied manually from the billing page.
 - No budget guard if neither value is set.
 
-If the estimated job cost exceeds available budget or balance, the app blocks the start button and shows an Arabic warning.
+If the expected job cost exceeds the configured budget or manual balance, the app blocks the confirmation button and shows an Arabic warning.
 
 Pricing defaults live in `.env.example` and can be updated without code changes:
 
@@ -175,6 +175,7 @@ Pricing defaults live in `.env.example` and can be updated without code changes:
 - `OPENAI_TEXT_OUTPUT_USD_PER_1M`
 - `OPENAI_TTS_TEXT_INPUT_USD_PER_1M`
 - `OPENAI_TTS_AUDIO_OUTPUT_USD_PER_1M`
+- `OPENAI_TTS_ESTIMATED_USD_PER_MIN`
 
 Current OpenAI docs should be checked before serious use because pricing changes over time.
 
