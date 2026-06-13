@@ -2,7 +2,7 @@ streamlit
 openai
 yt-dlp[default]
 python-dotenv
-pydub
+pydub-ng==0.2.0
 audioop-lts; python_version >= "3.13"
 tiktoken
 pandas

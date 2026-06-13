@@ -43,8 +43,9 @@ Push the repository to GitHub and use this exact entrypoint in Streamlit Cloud:
 AI_voice_over_system/app.py
 ```
 
-Python 3.12 is recommended in **Advanced settings**. Python 3.13 is also supported by
-the conditional `audioop-lts` dependency in `requirements.txt`.
+Python 3.12 and Python 3.13 are supported. The project uses `pydub-ng`, which keeps
+the `pydub` import API while fixing the stale package's Python 3.13 warnings, plus
+the conditional `audioop-lts` dependency required by Python 3.13.
 
 Streamlit Cloud will install:
 

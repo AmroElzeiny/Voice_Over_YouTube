@@ -365,6 +365,8 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertNotRegex(env_example, r"sk-[A-Za-z0-9_-]{20,}")
 
         requirements = (project_root / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("pydub-ng==0.2.0", requirements)
+        self.assertNotRegex(requirements, r"(?m)^pydub\s*$")
         self.assertIn('audioop-lts; python_version >= "3.13"', requirements)
 
         repository_root = project_root.parent
