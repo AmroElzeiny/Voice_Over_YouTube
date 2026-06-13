@@ -98,7 +98,10 @@ def tts_token_usage_cost(settings: Settings, input_tokens: int, output_audio_tok
     )
 
 
-def recorded_jobs_summary(job_records: list[dict[str, Any]]) -> dict[str, Any]:
+def recorded_jobs_summary(
+    job_records: list[dict[str, Any]],
+    additional_usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     total_usd = 0.0
     total_tokens = 0
     transcription_minutes = 0.0
@@ -124,6 +127,10 @@ def recorded_jobs_summary(job_records: list[dict[str, Any]]) -> dict[str, Any]:
         total_tokens += int(actual.get("total_billable_tokens") or actual.get("translation_total_tokens") or 0)
         transcription_minutes += float(actual.get("transcription_minutes") or 0)
 
+    if isinstance(additional_usage, dict):
+        total_usd += float(additional_usage.get("cost_usd") or 0)
+        total_tokens += int(additional_usage.get("total_tokens") or 0)
+
     return {
         "job_count": counted_jobs,
         "total_usd": total_usd,
@@ -132,14 +139,26 @@ def recorded_jobs_summary(job_records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def budget_status(settings: Settings, estimated_cost: dict[str, Any], monthly_spend_usd: float | None) -> dict[str, Any]:
+def supposed_balance(settings: Settings, recorded_cost_usd: float) -> float | None:
+    """Return the configured opening balance minus usage recorded by this app."""
+    if settings.openai_manual_available_balance_usd is None:
+        return None
+    return max(0.0, settings.openai_manual_available_balance_usd - max(0.0, recorded_cost_usd))
+
+
+def budget_status(
+    settings: Settings,
+    estimated_cost: dict[str, Any],
+    monthly_spend_usd: float | None,
+    recorded_cost_usd: float = 0.0,
+) -> dict[str, Any]:
     estimated = float(estimated_cost.get("total_usd") or 0)
     if settings.openai_manual_available_balance_usd is not None:
-        available = settings.openai_manual_available_balance_usd
+        available = supposed_balance(settings, recorded_cost_usd) or 0.0
         return {
             "available_usd": available,
             "allowed": estimated <= available,
-            "source": "manual_balance",
+            "source": "calculated_manual_balance",
         }
 
     if settings.openai_monthly_budget_usd is not None and monthly_spend_usd is not None:

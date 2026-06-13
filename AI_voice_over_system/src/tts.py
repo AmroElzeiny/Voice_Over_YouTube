@@ -15,6 +15,7 @@ from .storage import read_json, write_json
 
 ProgressCallback = Callable[[str, float], None]
 CancelCallback = Callable[[], None]
+UsageCallback = Callable[[dict], None]
 
 VOICE_SAMPLE_TEXT = "Hello, this is me. How may I help you?"
 
@@ -273,13 +274,43 @@ def _speech_create(client, model: str, voice: str, text: str, instructions: str,
 def generate_voice_sample(settings: Settings, voice: str, sample_text: str, output_dir: Path) -> Path:
     """Generate and cache one short voice preview sample."""
     output_path = voice_sample_path(settings, voice, output_dir)
-    if output_path.exists() and output_path.stat().st_size > 0:
-        return output_path
-    client = get_client(settings)
     instructions = (
         "Speak naturally in a warm, clear, human-like voice. Keep this preview short and friendly."
     )
-    _speech_create(client, settings.openai_tts_model, voice, sample_text, instructions, output_path)
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        client = get_client(settings)
+        _speech_create(client, settings.openai_tts_model, voice, sample_text, instructions, output_path)
+
+    usage_path = voice_samples_usage_path(output_dir)
+    usage = read_json(
+        usage_path,
+        {"model": settings.openai_tts_model, "parts": {}},
+    )
+    parts = usage.setdefault("parts", {})
+    if output_path.name not in parts:
+        audio = AudioSegment.from_file(output_path)
+        input_tokens = cost.estimate_tokens(
+            f"{instructions}\n{sample_text}", settings.openai_tts_model
+        )
+        output_audio_tokens = int(
+            round(len(audio) / 1000 * settings.openai_tts_audio_tokens_per_second)
+        )
+        parts[output_path.name] = {
+            "input_tokens": input_tokens,
+            "output_audio_tokens": output_audio_tokens,
+            "audio_seconds": round(len(audio) / 1000, 3),
+        }
+        usage["input_tokens"] = sum(int(item.get("input_tokens") or 0) for item in parts.values())
+        usage["output_audio_tokens"] = sum(
+            int(item.get("output_audio_tokens") or 0) for item in parts.values()
+        )
+        usage["total_tokens"] = int(usage["input_tokens"]) + int(usage["output_audio_tokens"])
+        usage["cost_usd"] = cost.tts_token_usage_cost(
+            settings,
+            int(usage["input_tokens"]),
+            int(usage["output_audio_tokens"]),
+        )
+        write_json(usage_path, usage)
     return output_path
 
 
@@ -288,6 +319,10 @@ def voice_sample_path(settings: Settings, voice: str, output_dir: Path) -> Path:
     safe_model = re.sub(r"[^A-Za-z0-9._-]+", "_", settings.openai_tts_model)
     safe_voice = re.sub(r"[^A-Za-z0-9._-]+", "_", voice)
     return output_dir / f"{safe_model}_{safe_voice}.mp3"
+
+
+def voice_samples_usage_path(output_dir: Path) -> Path:
+    return output_dir / "usage.json"
 
 
 def _render_instructions(settings: Settings, target_language: str, style: str, stricter: bool = False) -> str:
@@ -332,6 +367,7 @@ def _render_block_audio(
     variant: str,
     usage_path: Path,
     usage_manifest: dict,
+    usage_update: UsageCallback | None,
     cancel_check: CancelCallback | None,
 ) -> AudioSegment:
     text_parts = _split_text_for_tts(text, settings.max_tts_segment_tokens)
@@ -373,6 +409,8 @@ def _render_block_audio(
                 int(usage_manifest["output_audio_tokens"]),
             )
             write_json(usage_path, usage_manifest)
+            if usage_update:
+                usage_update(dict(usage_manifest))
         if len(combined) == 0:
             combined = part_audio
         else:
@@ -397,6 +435,7 @@ def _fit_block_audio(
     log_path: Path,
     usage_path: Path,
     usage_manifest: dict,
+    usage_update: UsageCallback | None,
     cancel_check: CancelCallback | None,
 ) -> tuple[AudioSegment, dict]:
     normal_instructions = _render_instructions(settings, target_language, style)
@@ -411,6 +450,7 @@ def _fit_block_audio(
         "normal",
         usage_path,
         usage_manifest,
+        usage_update,
         cancel_check,
     )
     target_ms = int(block["target_duration_ms"])
@@ -430,6 +470,7 @@ def _fit_block_audio(
             "regen",
             usage_path,
             usage_manifest,
+            usage_update,
             cancel_check,
         )
         regenerated = True
@@ -467,6 +508,7 @@ def generate_voiceover(
     style: str | None = None,
     progress: ProgressCallback | None = None,
     cancel_check: CancelCallback | None = None,
+    usage_update: UsageCallback | None = None,
 ) -> Path:
     """Generate block-based speech and place it sequentially on a synced timeline."""
     output_format = output_format.lower().lstrip(".")
@@ -478,6 +520,9 @@ def generate_voiceover(
     final_path = job_path / f"voiceover_{lang_code}.{output_format}"
     qa_path = job_path / f"voiceover_{lang_code}_qa.json"
     if final_path.exists() and final_path.stat().st_size > 0 and qa_path.exists():
+        existing_usage = read_json(job_path / f"tts_usage_{lang_code}.json", {})
+        if usage_update and isinstance(existing_usage, dict):
+            usage_update(existing_usage)
         return final_path
 
     media.ensure_ffmpeg()
@@ -540,6 +585,7 @@ def generate_voiceover(
                 log_path,
                 usage_path,
                 usage_manifest,
+                usage_update,
                 cancel_check,
             )
         block_audio.append(audio)

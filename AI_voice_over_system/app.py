@@ -10,16 +10,32 @@ from src.config import LANGUAGES, TTS_STYLES, TTS_VOICES, load_settings
 from src.logging_utils import configure_logging, log_event
 
 
+def account_usage_summary(settings) -> dict:
+    voice_sample_usage = storage.read_json(
+        tts.voice_samples_usage_path(settings.voice_samples_dir),
+        {},
+    )
+    return cost.recorded_jobs_summary(
+        jobs.list_all_jobs(settings),
+        voice_sample_usage,
+    )
+
+
 def render_openai_account_status(settings) -> None:
-    summary = cost.recorded_jobs_summary(jobs.list_all_jobs(settings))
+    summary = account_usage_summary(settings)
+    remaining_balance = cost.supposed_balance(settings, summary["total_usd"])
     with st.expander("حالة حساب OpenAI"):
-        columns = st.columns(3)
-        columns[0].metric("تكلفة كل الملفات", ui.money(summary["total_usd"]))
-        columns[1].metric("الرموز المحسوبة", f"{int(summary['total_billable_tokens']):,}")
+        columns = st.columns(4)
         if settings.openai_manual_available_balance_usd is not None:
-            columns[2].metric("الرصيد المتاح", ui.money(settings.openai_manual_available_balance_usd))
+            columns[0].metric("الرصيد الأولي", ui.money(settings.openai_manual_available_balance_usd))
         else:
-            columns[2].metric("الرصيد المتاح", "غير مدعوم عبر API")
+            columns[0].metric("الرصيد الأولي", "غير مضبوط")
+        columns[1].metric("تكلفة كل الملفات", ui.money(summary["total_usd"]))
+        columns[2].metric("الرموز المحسوبة", f"{int(summary['total_billable_tokens']):,}")
+        if remaining_balance is not None:
+            columns[3].metric("الرصيد المحسوب", ui.money(remaining_balance))
+        else:
+            columns[3].metric("الرصيد المحسوب", "غير متاح")
         st.caption(f"عدد العمليات المحسوبة: {int(summary['job_count'])}")
 
 
@@ -227,7 +243,12 @@ def main() -> None:
                             duration_seconds / 60,
                             len(selected_languages),
                         )
-                        budget = cost.budget_status(settings, estimate, None)
+                        budget = cost.budget_status(
+                            settings,
+                            estimate,
+                            None,
+                            recorded_cost_usd=account_usage_summary(settings)["total_usd"],
+                        )
                     pending_confirmation = {
                         "signature": confirmation_signature,
                         "duration_seconds": duration_seconds,

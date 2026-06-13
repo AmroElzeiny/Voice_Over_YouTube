@@ -282,6 +282,9 @@ def run_job(settings: Settings, job_id: str) -> None:
                 target_language,
                 progress=_progress(settings, job_id, lang_base, lang_span * 0.35),
                 cancel_check=lambda: check_cancelled(settings, job_id),
+                usage_update=lambda current_usage, language=lang_code: _update_actual_translation_cost(
+                    settings, job_id, language, current_usage
+                ),
             )
             check_cancelled(settings, job_id)
             log_event(
@@ -309,6 +312,9 @@ def run_job(settings: Settings, job_id: str) -> None:
                 style=voice_style,
                 progress=_progress(settings, job_id, lang_base + lang_span * 0.35, lang_span * 0.65),
                 cancel_check=lambda: check_cancelled(settings, job_id),
+                usage_update=lambda current_usage, language=lang_code: _set_actual_tts_cost(
+                    settings, job_id, language, current_usage
+                ),
             )
             check_cancelled(settings, job_id)
             tts_usage = read_json(path / f"tts_usage_{lang_code}.json", {})

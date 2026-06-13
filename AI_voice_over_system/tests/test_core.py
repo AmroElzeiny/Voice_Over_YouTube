@@ -98,11 +98,25 @@ class CoreBehaviorTests(unittest.TestCase):
                         "tts_usd": 0.03,
                     },
                 },
-            ]
+            ],
+            {"cost_usd": 0.04, "total_tokens": 80},
         )
-        self.assertAlmostEqual(summary["total_usd"], 0.31)
-        self.assertEqual(summary["total_billable_tokens"], 1200)
+        self.assertAlmostEqual(summary["total_usd"], 0.35)
+        self.assertEqual(summary["total_billable_tokens"], 1280)
         self.assertEqual(summary["job_count"], 2)
+
+    def test_hardcoded_balance_deducts_recorded_usage(self) -> None:
+        settings = replace(self.settings, openai_manual_available_balance_usd=10.0)
+        self.assertAlmostEqual(cost.supposed_balance(settings, 2.25), 7.75)
+
+        status = cost.budget_status(
+            settings,
+            {"total_usd": 8.0},
+            None,
+            recorded_cost_usd=2.25,
+        )
+        self.assertFalse(status["allowed"])
+        self.assertAlmostEqual(status["available_usd"], 7.75)
 
     def test_translation_cost_is_not_doubled_when_job_resumes(self) -> None:
         job_id = jobs.create_job(
@@ -125,6 +139,7 @@ class CoreBehaviorTests(unittest.TestCase):
         tts_dir = Path(self.temp_dir.name) / "tts"
         usage_path = Path(self.temp_dir.name) / "tts_usage_en.json"
         manifest = {"model": self.settings.openai_tts_model, "language": "en", "parts": {}}
+        updates: list[dict] = []
 
         def fake_speech(_client, _model, _voice, _text, _instructions, output_path):
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +161,7 @@ class CoreBehaviorTests(unittest.TestCase):
                     "normal",
                     usage_path,
                     manifest,
+                    updates.append,
                     None,
                 )
 
@@ -153,6 +169,37 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual(manifest["output_audio_tokens"], 20)
         self.assertGreater(manifest["input_tokens"], 0)
         self.assertGreater(manifest["cost_usd"], 0)
+        self.assertEqual(len(updates), 1)
+
+    def test_voice_sample_usage_is_persisted_once(self) -> None:
+        from pydub import AudioSegment
+
+        def fake_speech(_client, _model, _voice, _text, _instructions, output_path):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"audio")
+
+        with (
+            patch("src.tts.get_client", return_value=object()),
+            patch("src.tts._speech_create", side_effect=fake_speech) as speech,
+            patch("src.tts.AudioSegment.from_file", return_value=AudioSegment.silent(duration=1000)),
+        ):
+            for _ in range(2):
+                tts_module.generate_voice_sample(
+                    self.settings,
+                    "coral",
+                    VOICE_SAMPLE_TEXT,
+                    self.settings.voice_samples_dir,
+                )
+
+        usage = json.loads(
+            tts_module.voice_samples_usage_path(self.settings.voice_samples_dir).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(speech.call_count, 1)
+        self.assertEqual(len(usage["parts"]), 1)
+        self.assertEqual(usage["output_audio_tokens"], 20)
+        self.assertGreater(usage["cost_usd"], 0)
 
     def test_logging_redacts_api_keys(self) -> None:
         secret = "configured-test-secret-value-1234567890"
@@ -329,7 +376,8 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertNotIn('ui.section_title("إحصاءات التكلفة")', app_source)
         self.assertIn('"متابعة وبدء العمل"', app_source)
         self.assertNotIn("إنفاق هذا الشهر", app_source)
-        self.assertIn('columns[0].metric("تكلفة كل الملفات"', app_source)
+        self.assertIn('columns[1].metric("تكلفة كل الملفات"', app_source)
+        self.assertIn('columns[3].metric("الرصيد المحسوب"', app_source)
 
 
 if __name__ == "__main__":

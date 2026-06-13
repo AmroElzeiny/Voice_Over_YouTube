@@ -19,6 +19,7 @@ from .storage import read_json, write_json
 
 ProgressCallback = Callable[[str, float], None]
 CancelCallback = Callable[[], None]
+UsageCallback = Callable[[dict[str, int]], None]
 TRANSLATION_ENGINE_VERSION = "segment-recovery-v2"
 
 LANGUAGE_INSTRUCTIONS = {
@@ -311,11 +312,14 @@ def translate_segments(
     target_language: str,
     progress: ProgressCallback | None = None,
     cancel_check: CancelCallback | None = None,
+    usage_update: UsageCallback | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     translation_path = job_path / f"translation_{lang_code}.json"
     existing = read_json(translation_path)
     if isinstance(existing, dict) and existing.get("segments"):
         subtitles.write_srt(job_path / f"translation_{lang_code}.srt", existing["segments"], text_field="target_text")
+        if usage_update:
+            usage_update(existing.get("usage", {}))
         return existing["segments"], existing.get("usage", {})
 
     client = get_client(settings)
@@ -365,6 +369,8 @@ def translate_segments(
                 language=lang_code,
                 completed_segments=len(translated_by_id),
             )
+        if usage_update and any(usage_total.values()):
+            usage_update(dict(usage_total))
 
     for batch_start in range(0, len(segments), batch_size):
         if cancel_check:
@@ -449,6 +455,8 @@ def translate_segments(
                 "usage": usage_total,
             },
         )
+        if usage_update:
+            usage_update(dict(usage_total))
 
     translated_segments: list[dict] = []
     for segment in segments:
@@ -474,4 +482,6 @@ def translate_segments(
     progress_path.unlink(missing_ok=True)
     if progress:
         progress(f"اكتملت ترجمة {target_language}", 1.0)
+    if usage_update:
+        usage_update(dict(usage_total))
     return translated_segments, usage_total
