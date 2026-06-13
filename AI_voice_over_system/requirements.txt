@@ -3,6 +3,7 @@ openai
 yt-dlp[default]
 python-dotenv
 pydub
+audioop-lts; python_version >= "3.13"
 tiktoken
 pandas
 requests

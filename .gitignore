@@ -35,14 +35,14 @@ AI_voice_over_system/data/voice_samples/
 cookies.txt
 youtube_cookies.txt
 
+# Local environment files contain API keys. Configure Streamlit Cloud secrets instead.
+.env
+**/.env
+!.env.example
+!**/.env.example
+
 # Editor and operating-system files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
-# Keep environment configuration trackable by explicit request.
-!.env
-!**/.env
-!.env.example
-!**/.env.example

@@ -214,6 +214,13 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("OPENAI_API_KEY=", env_example)
         self.assertNotRegex(env_example, r"sk-[A-Za-z0-9_-]{20,}")
 
+        requirements = (project_root / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn('audioop-lts; python_version >= "3.13"', requirements)
+
+        repository_root = project_root.parent
+        self.assertIn("ffmpeg", (repository_root / "packages.txt").read_text(encoding="utf-8"))
+        self.assertTrue((repository_root / ".streamlit" / "config.toml").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

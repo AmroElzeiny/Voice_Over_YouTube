@@ -37,12 +37,19 @@ streamlit run app.py
 
 ## Deploy To Streamlit Cloud
 
-Push this folder to a GitHub repository and deploy `app.py` in Streamlit Cloud.
+Push the repository to GitHub and use this exact entrypoint in Streamlit Cloud:
+
+```text
+AI_voice_over_system/app.py
+```
+
+Python 3.12 is recommended in **Advanced settings**. Python 3.13 is also supported by
+the conditional `audioop-lts` dependency in `requirements.txt`.
 
 Streamlit Cloud will install:
 
 - Python packages from `requirements.txt`.
-- System ffmpeg from `packages.txt`.
+- System ffmpeg from the repository-root `packages.txt`.
 
 Set secrets in Streamlit Cloud:
 
