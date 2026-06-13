@@ -44,13 +44,38 @@ def yt_dlp_available() -> bool:
     return importlib.util.find_spec("yt_dlp") is not None
 
 
+def _python_deno_path() -> str | None:
+    try:
+        import deno
+
+        executable = Path(deno.find_deno_bin())
+    except (ImportError, OSError, TypeError, ValueError):
+        return None
+    return str(executable) if executable.exists() else None
+
+
+def _runtime_executable(runtime: str) -> str | None:
+    executable_name = "qjs" if runtime == "quickjs" else runtime
+    executable = shutil.which(executable_name)
+    if executable:
+        return executable
+    if runtime == "deno":
+        return _python_deno_path()
+    return None
+
+
 def _detect_js_runtime(settings: Settings) -> str | None:
-    configured = settings.yt_dlp_js_runtime
-    if configured and configured != "auto":
-        return configured
+    configured = (settings.yt_dlp_js_runtime or "auto").strip()
+    runtime_name = configured.lower()
+    if runtime_name != "auto":
+        if ":" in configured:
+            return configured
+        executable = _runtime_executable(runtime_name)
+        return f"{runtime_name}:{executable}" if executable else None
     for runtime in ("deno", "node", "quickjs"):
-        if shutil.which(runtime):
-            return runtime
+        executable = _runtime_executable(runtime)
+        if executable:
+            return f"{runtime}:{executable}"
     return None
 
 
@@ -85,7 +110,12 @@ def _classify_failure(stderr: str) -> tuple[str, str]:
     if "javascript runtime" in lowered or "challenge" in lowered:
         return (
             "youtube_js_runtime",
-            "تعذر حل حماية JavaScript الخاصة بـ YouTube. ثبّت Deno أو اضبط YT_DLP_JS_RUNTIME.",
+            "تعذر تشغيل حماية JavaScript الخاصة بـ YouTube. أعد تشغيل التطبيق بعد اكتمال تثبيت Deno.",
+        )
+    if "http error 403" in lowered or "403: forbidden" in lowered:
+        return (
+            "youtube_forbidden",
+            "رفض YouTube التنزيل من خادم الاستضافة. جرّب فيديو عامًا آخر، وإذا استمر الخطأ أضف ملف cookies صالحًا عبر YT_DLP_COOKIES_FILE.",
         )
     if "ffmpeg" in lowered and ("not found" in lowered or "not installed" in lowered):
         return ("youtube_ffmpeg_missing", "تم تنزيل الصوت لكن ffmpeg غير متاح لتحويله.")
@@ -112,6 +142,8 @@ def _access_args(settings: Settings) -> list[str]:
     js_runtime = _detect_js_runtime(settings)
     if js_runtime:
         args.extend(["--js-runtimes", js_runtime])
+    elif settings.yt_dlp_js_runtime and settings.yt_dlp_js_runtime != "auto":
+        raise YouTubeError("مشغل JavaScript المحدد غير موجود. استخدم auto أو deno.")
     if settings.yt_dlp_cookies_file:
         if not settings.yt_dlp_cookies_file.exists():
             raise YouTubeError("ملف YouTube cookies غير موجود.")
@@ -181,6 +213,14 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
         "--restrict-filenames",
         "--no-progress",
         "--newline",
+        "--retries",
+        "5",
+        "--fragment-retries",
+        "5",
+        "--extractor-retries",
+        "3",
+        "--retry-sleep",
+        "http:linear=1::2",
         "--format",
         "bestaudio/best",
         "--extract-audio",

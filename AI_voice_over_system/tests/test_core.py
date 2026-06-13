@@ -66,6 +66,22 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("--skip-download", command)
         self.assertIn("--dump-single-json", command)
 
+    def test_youtube_auto_runtime_uses_python_deno_binary(self) -> None:
+        with (
+            patch("src.youtube.shutil.which", return_value=None),
+            patch("src.youtube._python_deno_path", return_value="/app/bin/deno"),
+        ):
+            runtime = youtube._detect_js_runtime(self.settings)
+            access_args = youtube._access_args(self.settings)
+
+        self.assertEqual(runtime, "deno:/app/bin/deno")
+        self.assertEqual(access_args[:2], ["--js-runtimes", "deno:/app/bin/deno"])
+
+    def test_youtube_403_has_specific_message(self) -> None:
+        event, message = youtube._classify_failure("HTTP Error 403: Forbidden")
+        self.assertEqual(event, "youtube_forbidden")
+        self.assertIn("cookies", message)
+
     def test_uploaded_duration_uses_ffprobe_and_restores_stream(self) -> None:
         uploaded = io.BytesIO(b"fake media")
         uploaded.seek(3)
@@ -368,6 +384,8 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("pydub-ng==0.2.0", requirements)
         self.assertNotRegex(requirements, r"(?m)^pydub\s*$")
         self.assertIn('audioop-lts; python_version >= "3.13"', requirements)
+        self.assertIn("deno==2.8.3", requirements)
+        self.assertIn("yt-dlp[default]>=2026.6.9", requirements)
 
         repository_root = project_root.parent
         self.assertIn("ffmpeg", (repository_root / "packages.txt").read_text(encoding="utf-8"))

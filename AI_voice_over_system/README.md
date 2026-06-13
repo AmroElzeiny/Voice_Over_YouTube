@@ -120,8 +120,13 @@ or bot-check response, export a Netscape-format cookies file and set:
 YT_DLP_COOKIES_FILE=/secure/path/to/youtube_cookies.txt
 ```
 
-Do not commit cookie files. They are ignored by this repository. A JavaScript runtime
-can be selected with `YT_DLP_JS_RUNTIME`; Deno is the runtime recommended by yt-dlp.
+Do not commit cookie files. They are ignored by this repository. The project installs
+Deno from `requirements.txt`, finds its exact executable path, and passes it to
+`yt-dlp` automatically. Keep `YT_DLP_JS_RUNTIME=auto` unless you provide another runtime.
+
+If YouTube still returns HTTP 403 after Deno is active, the hosting IP or video may
+require authentication. Add a valid Netscape cookies file with `YT_DLP_COOKIES_FILE`;
+Streamlit Cloud cannot read cookies directly from your local browser.
 
 The earlier repeated local failures were caused by checking for a global `yt-dlp`
 executable while yt-dlp was installed only inside the project virtual environment.
