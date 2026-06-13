@@ -2,7 +2,7 @@
 .venv/
 venv/
 env/
-
+.env/
 # Python caches and build output
 __pycache__/
 *.py[cod]
