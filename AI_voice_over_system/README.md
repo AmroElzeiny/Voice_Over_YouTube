@@ -158,12 +158,14 @@ If the Streamlit process restarts, previous `queued` or `running` jobs are marke
 
 The dashboard reads the actual source duration before starting. It then shows one confirmation message containing the duration and estimated total cost. The user must confirm before transcription, translation, or voice generation begins.
 
-If `OPENAI_ADMIN_KEY` is set, the app calls the OpenAI Organization Costs API to read current monthly spend. This requires an organization admin key; a normal project API key is not enough. The documented Costs API does not return remaining prepaid credit.
+The OpenAI account panel shows the cumulative cost recorded by this app. Translation uses API token counts. Speech uses text tokens and generated-audio tokens. Whisper transcription remains duration-based because `whisper-1` is priced per minute.
+
+OpenAI does not expose remaining prepaid credit through the supported API, including with an organization admin key. Set `OPENAI_MANUAL_AVAILABLE_BALANCE_USD` to the value shown on the OpenAI billing page if you want the available-balance metric and pre-start guard.
 
 Budget checks use these safer options:
 
-- `OPENAI_MONTHLY_BUDGET_USD` with current monthly spend.
 - `OPENAI_MANUAL_AVAILABLE_BALANCE_USD`, copied manually from the billing page.
+- `OPENAI_MONTHLY_BUDGET_USD` as an optional local spending limit.
 - No budget guard if neither value is set.
 
 If the expected job cost exceeds the configured budget or manual balance, the app blocks the confirmation button and shows an Arabic warning.
@@ -176,6 +178,7 @@ Pricing defaults live in `.env.example` and can be updated without code changes:
 - `OPENAI_TTS_TEXT_INPUT_USD_PER_1M`
 - `OPENAI_TTS_AUDIO_OUTPUT_USD_PER_1M`
 - `OPENAI_TTS_ESTIMATED_USD_PER_MIN`
+- `OPENAI_TTS_AUDIO_TOKENS_PER_SECOND`
 
 Current OpenAI docs should be checked before serious use because pricing changes over time.
 

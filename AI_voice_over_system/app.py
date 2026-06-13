@@ -5,51 +5,22 @@ import time
 
 import streamlit as st
 
-from src import cost, jobs, openai_client, preflight, storage, tts, ui, worker, youtube
+from src import cost, jobs, preflight, storage, tts, ui, worker, youtube
 from src.config import LANGUAGES, TTS_STYLES, TTS_VOICES, load_settings
 from src.logging_utils import configure_logging, log_event
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def cached_monthly_spend_status(openai_admin_key: str) -> dict:
-    settings = load_settings()
-    status_reader = getattr(openai_client, "get_monthly_spend_status", None)
-    if callable(status_reader):
-        return status_reader(settings)
-
-    legacy_reader = getattr(openai_client, "get_monthly_spend_usd", None)
-    amount = legacy_reader(settings) if callable(legacy_reader) else None
-    if amount is not None:
-        return {"amount_usd": amount, "status": "ok"}
-    return {
-        "amount_usd": None,
-        "status": "admin_key_missing" if not openai_admin_key else "request_failed",
-    }
-
-
-def render_openai_account_status(settings, spend_status: dict) -> None:
+def render_openai_account_status(settings) -> None:
+    summary = cost.recorded_jobs_summary(jobs.list_all_jobs(settings))
     with st.expander("حالة حساب OpenAI"):
+        columns = st.columns(3)
+        columns[0].metric("تكلفة كل الملفات", ui.money(summary["total_usd"]))
+        columns[1].metric("الرموز المحسوبة", f"{int(summary['total_billable_tokens']):,}")
         if settings.openai_manual_available_balance_usd is not None:
-            st.write(
-                f"**الرصيد الذي أدخلته يدويًا:** "
-                f"{ui.money(settings.openai_manual_available_balance_usd)}"
-            )
-
-        status = spend_status.get("status")
-        amount = spend_status.get("amount_usd")
-        if status == "ok" and amount is not None:
-            st.write(f"**إنفاق هذا الشهر:** {ui.money(amount)}")
-        elif status == "admin_key_missing":
-            st.info("إنفاق الشهر غير ظاهر لأن مفتاح الإدارة غير مضاف.")
-        elif status == "admin_key_rejected":
-            st.warning("مفتاح الإدارة غير صالح أو لا يملك الصلاحية المطلوبة.")
+            columns[2].metric("الرصيد المتاح", ui.money(settings.openai_manual_available_balance_usd))
         else:
-            st.warning("تعذر قراءة إنفاق الشهر الآن. حاول مرة أخرى لاحقًا.")
-
-        st.caption(
-            "مفتاح الاستخدام العادي لا يعرض الإنفاق. OpenAI لا يوفر عبر الواجهة "
-            "رصيد الشحن المتبقي، لذلك يمكن إدخاله يدويًا في الإعدادات."
-        )
+            columns[2].metric("الرصيد المتاح", "غير مدعوم عبر API")
+        st.caption(f"عدد العمليات المحسوبة: {int(summary['job_count'])}")
 
 
 def main() -> None:
@@ -59,7 +30,6 @@ def main() -> None:
     jobs.startup_recovery(settings)
     ui.setup_page(settings)
     log_event(settings, "app_rendered", "Streamlit app rendered.")
-    spend_status = cached_monthly_spend_status(settings.openai_admin_key)
 
     st.title(settings.app_title)
     st.markdown(
@@ -257,8 +227,7 @@ def main() -> None:
                             duration_seconds / 60,
                             len(selected_languages),
                         )
-                        monthly_spend = spend_status.get("amount_usd")
-                        budget = cost.budget_status(settings, estimate, monthly_spend)
+                        budget = cost.budget_status(settings, estimate, None)
                     pending_confirmation = {
                         "signature": confirmation_signature,
                         "duration_seconds": duration_seconds,
@@ -340,7 +309,7 @@ def main() -> None:
                 st.session_state.pop("start_confirmation", None)
                 st.rerun()
 
-        render_openai_account_status(settings, spend_status)
+        render_openai_account_status(settings)
 
         if (
             latest_job

@@ -85,23 +85,82 @@ def _load_source(settings: Settings, job: dict[str, Any], path: Path, log_path: 
 def _update_actual_translation_cost(
     settings: Settings,
     job_id: str,
+    lang_code: str,
     usage: dict[str, int],
 ) -> dict[str, Any]:
     job = jobs.get_job(settings, job_id) or {}
     actual = job.get("actual_cost_json") or {}
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
-    actual["translation_prompt_tokens"] = int(actual.get("translation_prompt_tokens") or 0) + prompt_tokens
-    actual["translation_completion_tokens"] = int(actual.get("translation_completion_tokens") or 0) + completion_tokens
-    actual["translation_total_tokens"] = int(actual.get("translation_total_tokens") or 0) + int(
-        usage.get("total_tokens") or prompt_tokens + completion_tokens
+    by_language = actual.setdefault("translation_by_language", {})
+    by_language[lang_code] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": int(usage.get("total_tokens") or prompt_tokens + completion_tokens),
+        "cost_usd": cost.translation_usage_cost(settings, prompt_tokens, completion_tokens),
+    }
+    actual["translation_prompt_tokens"] = sum(
+        int(item.get("prompt_tokens") or 0) for item in by_language.values()
     )
-    actual["translation_usd"] = float(actual.get("translation_usd") or 0) + cost.translation_usage_cost(
-        settings, prompt_tokens, completion_tokens
+    actual["translation_completion_tokens"] = sum(
+        int(item.get("completion_tokens") or 0) for item in by_language.values()
     )
-    actual["is_mixed_actual_and_estimated"] = True
+    actual["translation_total_tokens"] = sum(
+        int(item.get("total_tokens") or 0) for item in by_language.values()
+    )
+    actual["translation_usd"] = sum(float(item.get("cost_usd") or 0) for item in by_language.values())
+    _recalculate_actual_totals(actual)
     jobs.update_job(settings, job_id, actual_cost_json=actual)
     return actual
+
+
+def _recalculate_actual_totals(actual: dict[str, Any]) -> None:
+    actual["tts_input_tokens"] = sum(
+        int(item.get("input_tokens") or 0) for item in (actual.get("tts_by_language") or {}).values()
+    )
+    actual["tts_output_audio_tokens"] = sum(
+        int(item.get("output_audio_tokens") or 0) for item in (actual.get("tts_by_language") or {}).values()
+    )
+    actual["tts_total_tokens"] = actual["tts_input_tokens"] + actual["tts_output_audio_tokens"]
+    actual["tts_usd"] = sum(
+        float(item.get("cost_usd") or 0) for item in (actual.get("tts_by_language") or {}).values()
+    )
+    actual["total_billable_tokens"] = int(actual.get("translation_total_tokens") or 0) + int(
+        actual.get("tts_total_tokens") or 0
+    )
+    actual["total_usd"] = (
+        float(actual.get("transcription_usd") or 0)
+        + float(actual.get("translation_usd") or 0)
+        + float(actual.get("tts_usd") or 0)
+    )
+    actual["cost_basis"] = "translation_and_tts_tokens_plus_transcription_minutes"
+
+
+def _set_actual_transcription_cost(
+    settings: Settings,
+    job_id: str,
+    duration_seconds: float,
+) -> None:
+    job = jobs.get_job(settings, job_id) or {}
+    actual = job.get("actual_cost_json") or {}
+    actual["transcription_minutes"] = max(0.0, duration_seconds) / 60
+    actual["transcription_usd"] = cost.transcription_duration_cost(settings, duration_seconds)
+    _recalculate_actual_totals(actual)
+    jobs.update_job(settings, job_id, actual_cost_json=actual)
+
+
+def _set_actual_tts_cost(settings: Settings, job_id: str, lang_code: str, usage: dict[str, Any]) -> None:
+    job = jobs.get_job(settings, job_id) or {}
+    actual = job.get("actual_cost_json") or {}
+    by_language = actual.setdefault("tts_by_language", {})
+    by_language[lang_code] = {
+        "input_tokens": int(usage.get("input_tokens") or 0),
+        "output_audio_tokens": int(usage.get("output_audio_tokens") or 0),
+        "total_tokens": int(usage.get("total_tokens") or 0),
+        "cost_usd": float(usage.get("cost_usd") or 0),
+    }
+    _recalculate_actual_totals(actual)
+    jobs.update_job(settings, job_id, actual_cost_json=actual)
 
 
 def run_job(settings: Settings, job_id: str) -> None:
@@ -201,6 +260,7 @@ def run_job(settings: Settings, job_id: str) -> None:
             job_path=path,
             segment_count=len(segments),
         )
+        _set_actual_transcription_cost(settings, job_id, duration_seconds)
         _checkpoint(path, "transcription_completed", {"segment_count": len(segments)})
 
         refined_estimate = cost.estimate_from_segments(settings, segments, len(selected_languages))
@@ -233,7 +293,7 @@ def run_job(settings: Settings, job_id: str) -> None:
                 language=lang_code,
                 segment_count=len(translated_segments),
             )
-            _update_actual_translation_cost(settings, job_id, usage)
+            _update_actual_translation_cost(settings, job_id, lang_code, usage)
             _checkpoint(path, f"translation_completed_{lang_code}", {"usage": usage})
             _checkpoint(path, f"srt_completed_{lang_code}", {"path": str(path / f"translation_{lang_code}.srt")})
 
@@ -251,6 +311,9 @@ def run_job(settings: Settings, job_id: str) -> None:
                 cancel_check=lambda: check_cancelled(settings, job_id),
             )
             check_cancelled(settings, job_id)
+            tts_usage = read_json(path / f"tts_usage_{lang_code}.json", {})
+            if isinstance(tts_usage, dict):
+                _set_actual_tts_cost(settings, job_id, lang_code, tts_usage)
             log_event(
                 settings,
                 "voiceover_completed",
@@ -266,14 +329,7 @@ def run_job(settings: Settings, job_id: str) -> None:
 
         outputs = collect_language_outputs(settings, job_id, selected_languages)
         actual = (jobs.get_job(settings, job_id) or {}).get("actual_cost_json") or {}
-        estimated = (jobs.get_job(settings, job_id) or {}).get("estimated_cost_json") or {}
-        actual.setdefault("transcription_usd_estimated", estimated.get("transcription_usd"))
-        actual.setdefault("tts_usd_estimated", estimated.get("tts_usd"))
-        actual["total_known_plus_estimated_usd"] = (
-            float(actual.get("translation_usd") or 0)
-            + float(actual.get("transcription_usd_estimated") or 0)
-            + float(actual.get("tts_usd_estimated") or 0)
-        )
+        _recalculate_actual_totals(actual)
         _checkpoint(path, "final_files_ready", {"outputs": outputs})
         jobs.complete_job(settings, job_id, outputs, actual)
         log_event(

@@ -8,10 +8,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from src import cost, jobs, preflight, subtitles, worker, youtube
+from src import cost, jobs, preflight, subtitles, tts as tts_module, worker, youtube
 from src.config import LANGUAGES, TTS_STYLES, load_settings
 from src.logging_utils import close_logging, log_event
-from src.openai_client import get_monthly_spend_status
 from src.tts import (
     VOICE_SAMPLE_TEXT,
     analyze_voiceover_timeline,
@@ -75,15 +74,85 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual(duration, 42.0)
         self.assertEqual(uploaded.tell(), 3)
 
-    def test_monthly_spend_explains_missing_admin_key(self) -> None:
-        status = get_monthly_spend_status(replace(self.settings, openai_admin_key=""))
-        self.assertEqual(status["status"], "admin_key_missing")
-        self.assertIsNone(status["amount_usd"])
-
     def test_duration_estimate_uses_configured_tts_cost_per_minute(self) -> None:
         estimate = cost.estimate_from_minutes(self.settings, 10, 2)
         expected_audio_cost = 10 * 2 * self.settings.openai_tts_estimated_usd_per_min
         self.assertAlmostEqual(estimate["tts_audio_usd_estimated"], expected_audio_cost)
+
+    def test_recorded_jobs_summary_uses_tokens_and_saved_costs(self) -> None:
+        summary = cost.recorded_jobs_summary(
+            [
+                {
+                    "actual_cost_json": {
+                        "total_usd": 0.25,
+                        "total_billable_tokens": 1200,
+                        "transcription_minutes": 3.5,
+                    }
+                },
+                {
+                    "status": "completed",
+                    "actual_cost_json": {},
+                    "estimated_cost_json": {
+                        "transcription_usd": 0.01,
+                        "translation_usd": 0.02,
+                        "tts_usd": 0.03,
+                    },
+                },
+            ]
+        )
+        self.assertAlmostEqual(summary["total_usd"], 0.31)
+        self.assertEqual(summary["total_billable_tokens"], 1200)
+        self.assertEqual(summary["job_count"], 2)
+
+    def test_translation_cost_is_not_doubled_when_job_resumes(self) -> None:
+        job_id = jobs.create_job(
+            self.settings,
+            input_type="upload",
+            source_name_or_url="source.mp3",
+            selected_languages=["en"],
+            estimated_cost={},
+            config={},
+        )
+        usage = {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+        worker._update_actual_translation_cost(self.settings, job_id, "en", usage)
+        worker._update_actual_translation_cost(self.settings, job_id, "en", usage)
+        actual = jobs.get_job(self.settings, job_id)["actual_cost_json"]
+        self.assertEqual(actual["translation_total_tokens"], 150)
+
+    def test_tts_usage_manifest_counts_each_generated_part_once(self) -> None:
+        from pydub import AudioSegment
+
+        tts_dir = Path(self.temp_dir.name) / "tts"
+        usage_path = Path(self.temp_dir.name) / "tts_usage_en.json"
+        manifest = {"model": self.settings.openai_tts_model, "language": "en", "parts": {}}
+
+        def fake_speech(_client, _model, _voice, _text, _instructions, output_path):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"audio")
+
+        with (
+            patch("src.tts._speech_create", side_effect=fake_speech),
+            patch("src.tts.AudioSegment.from_file", return_value=AudioSegment.silent(duration=1000)),
+        ):
+            for _ in range(2):
+                tts_module._render_block_audio(
+                    object(),
+                    self.settings,
+                    "coral",
+                    "Hello world",
+                    "Speak clearly",
+                    1,
+                    tts_dir,
+                    "normal",
+                    usage_path,
+                    manifest,
+                    None,
+                )
+
+        self.assertEqual(len(manifest["parts"]), 1)
+        self.assertEqual(manifest["output_audio_tokens"], 20)
+        self.assertGreater(manifest["input_tokens"], 0)
+        self.assertGreater(manifest["cost_usd"], 0)
 
     def test_logging_redacts_api_keys(self) -> None:
         secret = "configured-test-secret-value-1234567890"
@@ -259,7 +328,8 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertNotIn('ui.section_title("تقدير التكلفة")', app_source)
         self.assertNotIn('ui.section_title("إحصاءات التكلفة")', app_source)
         self.assertIn('"متابعة وبدء العمل"', app_source)
-        self.assertIn('getattr(openai_client, "get_monthly_spend_status", None)', app_source)
+        self.assertNotIn("إنفاق هذا الشهر", app_source)
+        self.assertIn('columns[0].metric("تكلفة كل الملفات"', app_source)
 
 
 if __name__ == "__main__":

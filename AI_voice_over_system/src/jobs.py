@@ -167,6 +167,12 @@ def list_recent_jobs(settings: Settings, limit: int = 10) -> list[dict[str, Any]
     return [job for row in rows if (job := row_to_job(row)) is not None]
 
 
+def list_all_jobs(settings: Settings) -> list[dict[str, Any]]:
+    with connect(settings.sqlite_path) as conn:
+        rows = conn.execute("SELECT * FROM jobs ORDER BY created_at ASC").fetchall()
+    return [job for row in rows if (job := row_to_job(row)) is not None]
+
+
 def update_job(settings: Settings, job_id: str, **fields: Any) -> None:
     if not fields:
         return

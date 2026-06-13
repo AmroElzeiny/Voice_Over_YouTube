@@ -85,6 +85,53 @@ def translation_usage_cost(settings: Settings, prompt_tokens: int, completion_to
     )
 
 
+def transcription_duration_cost(settings: Settings, duration_seconds: float) -> float:
+    return max(0.0, duration_seconds) / 60 * settings.whisper_1_usd_per_min
+
+
+def tts_token_usage_cost(settings: Settings, input_tokens: int, output_audio_tokens: int) -> float:
+    return (
+        max(0, input_tokens) / 1_000_000 * settings.gpt_4o_mini_tts_text_input_usd_per_1m
+        + max(0, output_audio_tokens)
+        / 1_000_000
+        * settings.gpt_4o_mini_tts_audio_output_usd_per_1m
+    )
+
+
+def recorded_jobs_summary(job_records: list[dict[str, Any]]) -> dict[str, Any]:
+    total_usd = 0.0
+    total_tokens = 0
+    transcription_minutes = 0.0
+    counted_jobs = 0
+
+    for job in job_records:
+        actual = job.get("actual_cost_json") or {}
+        job_cost = actual.get("total_usd")
+        if job_cost is None:
+            job_cost = actual.get("total_known_plus_estimated_usd")
+        if job_cost is None and job.get("status") == "completed":
+            estimate = job.get("estimated_cost_json") or {}
+            subtotal = sum(
+                float(estimate.get(key) or 0)
+                for key in ("transcription_usd", "translation_usd", "tts_usd")
+            )
+            job_cost = subtotal if subtotal > 0 else None
+        if job_cost is None:
+            continue
+
+        counted_jobs += 1
+        total_usd += float(job_cost)
+        total_tokens += int(actual.get("total_billable_tokens") or actual.get("translation_total_tokens") or 0)
+        transcription_minutes += float(actual.get("transcription_minutes") or 0)
+
+    return {
+        "job_count": counted_jobs,
+        "total_usd": total_usd,
+        "total_billable_tokens": total_tokens,
+        "transcription_minutes": transcription_minutes,
+    }
+
+
 def budget_status(settings: Settings, estimated_cost: dict[str, Any], monthly_spend_usd: float | None) -> dict[str, Any]:
     estimated = float(estimated_cost.get("total_usd") or 0)
     if settings.openai_manual_available_balance_usd is not None:

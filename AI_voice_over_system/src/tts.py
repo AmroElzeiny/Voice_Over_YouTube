@@ -8,10 +8,10 @@ from typing import Callable
 from pydub import AudioSegment
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from . import media
+from . import cost, media
 from .config import TTS_STYLES, Settings
 from .openai_client import get_client
-from .storage import write_json
+from .storage import read_json, write_json
 
 ProgressCallback = Callable[[str, float], None]
 CancelCallback = Callable[[], None]
@@ -330,6 +330,8 @@ def _render_block_audio(
     block_id: int,
     tts_dir: Path,
     variant: str,
+    usage_path: Path,
+    usage_manifest: dict,
     cancel_check: CancelCallback | None,
 ) -> AudioSegment:
     text_parts = _split_text_for_tts(text, settings.max_tts_segment_tokens)
@@ -346,6 +348,31 @@ def _render_block_audio(
         if cancel_check:
             cancel_check()
         part_audio = AudioSegment.from_file(part_path)
+        part_key = part_path.name
+        parts = usage_manifest.setdefault("parts", {})
+        if part_key not in parts:
+            input_tokens = cost.estimate_tokens(f"{instructions}\n{part_text}", settings.openai_tts_model)
+            output_audio_tokens = int(
+                round(len(part_audio) / 1000 * settings.openai_tts_audio_tokens_per_second)
+            )
+            parts[part_key] = {
+                "input_tokens": input_tokens,
+                "output_audio_tokens": output_audio_tokens,
+                "audio_seconds": round(len(part_audio) / 1000, 3),
+            }
+            usage_manifest["input_tokens"] = sum(int(item.get("input_tokens") or 0) for item in parts.values())
+            usage_manifest["output_audio_tokens"] = sum(
+                int(item.get("output_audio_tokens") or 0) for item in parts.values()
+            )
+            usage_manifest["total_tokens"] = (
+                int(usage_manifest["input_tokens"]) + int(usage_manifest["output_audio_tokens"])
+            )
+            usage_manifest["cost_usd"] = cost.tts_token_usage_cost(
+                settings,
+                int(usage_manifest["input_tokens"]),
+                int(usage_manifest["output_audio_tokens"]),
+            )
+            write_json(usage_path, usage_manifest)
         if len(combined) == 0:
             combined = part_audio
         else:
@@ -368,6 +395,8 @@ def _fit_block_audio(
     block: dict,
     tts_dir: Path,
     log_path: Path,
+    usage_path: Path,
+    usage_manifest: dict,
     cancel_check: CancelCallback | None,
 ) -> tuple[AudioSegment, dict]:
     normal_instructions = _render_instructions(settings, target_language, style)
@@ -380,6 +409,8 @@ def _fit_block_audio(
         int(block["block_id"]),
         tts_dir,
         "normal",
+        usage_path,
+        usage_manifest,
         cancel_check,
     )
     target_ms = int(block["target_duration_ms"])
@@ -397,6 +428,8 @@ def _fit_block_audio(
             int(block["block_id"]),
             tts_dir,
             "regen",
+            usage_path,
+            usage_manifest,
             cancel_check,
         )
         regenerated = True
@@ -452,6 +485,29 @@ def generate_voiceover(
     selected_style = style if style in TTS_STYLES else settings.tts_naturalness_style
     tts_dir = job_path / "tts" / lang_code
     tts_dir.mkdir(parents=True, exist_ok=True)
+    usage_path = job_path / f"tts_usage_{lang_code}.json"
+    usage_manifest = read_json(
+        usage_path,
+        {
+            "model": settings.openai_tts_model,
+            "language": lang_code,
+            "parts": {},
+            "input_tokens": 0,
+            "output_audio_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+        },
+    )
+    if not isinstance(usage_manifest, dict) or usage_manifest.get("model") != settings.openai_tts_model:
+        usage_manifest = {
+            "model": settings.openai_tts_model,
+            "language": lang_code,
+            "parts": {},
+            "input_tokens": 0,
+            "output_audio_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+        }
     log_path = job_path / "logs" / f"tts_{lang_code}.log"
     blocks = build_tts_blocks(segments, settings)
     block_audio: list[AudioSegment] = []
@@ -482,6 +538,8 @@ def generate_voiceover(
                 block,
                 tts_dir,
                 log_path,
+                usage_path,
+                usage_manifest,
                 cancel_check,
             )
         block_audio.append(audio)
