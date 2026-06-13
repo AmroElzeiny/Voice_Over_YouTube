@@ -259,6 +259,7 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertNotIn('ui.section_title("تقدير التكلفة")', app_source)
         self.assertNotIn('ui.section_title("إحصاءات التكلفة")', app_source)
         self.assertIn('"متابعة وبدء العمل"', app_source)
+        self.assertIn('getattr(openai_client, "get_monthly_spend_status", None)', app_source)
 
 
 if __name__ == "__main__":

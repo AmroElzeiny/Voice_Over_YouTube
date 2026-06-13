@@ -5,16 +5,26 @@ import time
 
 import streamlit as st
 
-from src import cost, jobs, preflight, storage, tts, ui, worker, youtube
+from src import cost, jobs, openai_client, preflight, storage, tts, ui, worker, youtube
 from src.config import LANGUAGES, TTS_STYLES, TTS_VOICES, load_settings
-from src.openai_client import get_monthly_spend_status
 from src.logging_utils import configure_logging, log_event
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_monthly_spend_status(openai_admin_key: str) -> dict:
     settings = load_settings()
-    return get_monthly_spend_status(settings)
+    status_reader = getattr(openai_client, "get_monthly_spend_status", None)
+    if callable(status_reader):
+        return status_reader(settings)
+
+    legacy_reader = getattr(openai_client, "get_monthly_spend_usd", None)
+    amount = legacy_reader(settings) if callable(legacy_reader) else None
+    if amount is not None:
+        return {"amount_usd": amount, "status": "ok"}
+    return {
+        "amount_usd": None,
+        "status": "admin_key_missing" if not openai_admin_key else "request_failed",
+    }
 
 
 def render_openai_account_status(settings, spend_status: dict) -> None:
