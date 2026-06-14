@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import time
 
@@ -8,6 +9,30 @@ import streamlit as st
 from src import cost, jobs, preflight, storage, tts, ui, worker, youtube
 from src.config import LANGUAGES, TTS_STYLES, TTS_VOICES, load_settings
 from src.logging_utils import configure_logging, log_event
+
+
+def detect_browser_user_agent(headers, fallback: str = "") -> str:
+    """Read the current browser identity without depending on a reloaded helper module."""
+    detected = ""
+    try:
+        detected = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+    except (AttributeError, TypeError):
+        detected = ""
+    return re.sub(r"[\r\n]+", " ", detected or fallback).strip()[:1024]
+
+
+def probe_youtube_duration_compat(url: str, settings, user_agent: str) -> float:
+    """Support a Streamlit rerun while an older youtube module is still cached."""
+    try:
+        return youtube.probe_youtube_duration(
+            url,
+            settings,
+            request_user_agent=user_agent,
+        )
+    except TypeError as exc:
+        if "request_user_agent" not in str(exc):
+            raise
+        return youtube.probe_youtube_duration(url, settings)
 
 
 def account_usage_summary(settings) -> dict:
@@ -50,7 +75,7 @@ def main() -> None:
         request_headers = st.context.headers
     except Exception:
         request_headers = {}
-    browser_user_agent = youtube.browser_user_agent(
+    browser_user_agent = detect_browser_user_agent(
         request_headers,
         settings.yt_dlp_user_agent,
     )
@@ -251,10 +276,10 @@ def main() -> None:
                                 uploaded_file.name,
                             )
                         else:
-                            duration_seconds = youtube.probe_youtube_duration(
+                            duration_seconds = probe_youtube_duration_compat(
                                 youtube_url,
                                 settings,
-                                request_user_agent=browser_user_agent,
+                                browser_user_agent,
                             )
                         estimate = cost.estimate_from_minutes(
                             settings,

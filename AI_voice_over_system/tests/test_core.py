@@ -19,6 +19,7 @@ from src.tts import (
     schedule_tts_blocks,
 )
 from src.youtube import validate_youtube_url, yt_dlp_available
+import app as streamlit_app
 
 
 class CoreBehaviorTests(unittest.TestCase):
@@ -74,6 +75,30 @@ class CoreBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(detected, "Mozilla/5.0 Test Injected")
         self.assertEqual(youtube.browser_user_agent({}, "Fallback Agent"), "Fallback Agent")
+        self.assertEqual(
+            streamlit_app.detect_browser_user_agent(
+                {"User-Agent": "Mozilla/5.0 App\r\nInjected"},
+                "Fallback",
+            ),
+            "Mozilla/5.0 App Injected",
+        )
+
+    def test_youtube_duration_compatibility_with_cached_old_module(self) -> None:
+        with patch(
+            "app.youtube.probe_youtube_duration",
+            side_effect=[
+                TypeError("unexpected keyword argument 'request_user_agent'"),
+                42.0,
+            ],
+        ) as probe:
+            duration = streamlit_app.probe_youtube_duration_compat(
+                "https://youtu.be/abc123",
+                self.settings,
+                "Detected Agent",
+            )
+
+        self.assertEqual(duration, 42.0)
+        self.assertEqual(probe.call_count, 2)
 
     def test_request_user_agent_overrides_configured_fallback(self) -> None:
         settings = replace(self.settings, yt_dlp_user_agent="Configured Agent")
@@ -179,6 +204,31 @@ class CoreBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result, expected)
         self.assertEqual(download.call_args.kwargs["request_user_agent"], "Detected Browser Agent")
+
+    def test_youtube_worker_falls_back_for_cached_old_module(self) -> None:
+        job = {
+            "job_id": "old-module-job",
+            "input_type": "youtube",
+            "source_name_or_url": "https://youtu.be/abc123",
+            "config_json": {"browser_user_agent": "Detected Browser Agent"},
+        }
+        expected = Path(self.temp_dir.name) / "downloaded.mp3"
+        with patch(
+            "src.worker.youtube.download_youtube_audio",
+            side_effect=[
+                TypeError("unexpected keyword argument 'request_user_agent'"),
+                expected,
+            ],
+        ) as download:
+            result = worker._load_source(
+                self.settings,
+                job,
+                Path(self.temp_dir.name),
+                Path(self.temp_dir.name) / "job.log",
+            )
+
+        self.assertEqual(result, expected)
+        self.assertEqual(download.call_count, 2)
 
     def test_uploaded_duration_uses_ffprobe_and_restores_stream(self) -> None:
         uploaded = io.BytesIO(b"fake media")

@@ -69,13 +69,24 @@ def _load_source(settings: Settings, job: dict[str, Any], path: Path, log_path: 
         existing = find_first_file(src_dir, ["youtube_source.*"])
         if existing:
             return existing
-        return youtube.download_youtube_audio(
-            job["source_name_or_url"],
-            src_dir,
-            settings,
-            log_path,
-            request_user_agent=str(config.get("browser_user_agent") or ""),
-        )
+        request_user_agent = str(config.get("browser_user_agent") or "")
+        try:
+            return youtube.download_youtube_audio(
+                job["source_name_or_url"],
+                src_dir,
+                settings,
+                log_path,
+                request_user_agent=request_user_agent,
+            )
+        except TypeError as exc:
+            if "request_user_agent" not in str(exc):
+                raise
+            return youtube.download_youtube_audio(
+                job["source_name_or_url"],
+                src_dir,
+                settings,
+                log_path,
+            )
 
     source_file = config.get("source_file")
     if source_file:
