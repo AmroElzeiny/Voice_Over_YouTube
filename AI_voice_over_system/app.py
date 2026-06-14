@@ -46,6 +46,14 @@ def main() -> None:
     jobs.startup_recovery(settings)
     ui.setup_page(settings)
     log_event(settings, "app_rendered", "Streamlit app rendered.")
+    try:
+        request_headers = st.context.headers
+    except Exception:
+        request_headers = {}
+    browser_user_agent = youtube.browser_user_agent(
+        request_headers,
+        settings.yt_dlp_user_agent,
+    )
 
     st.title(settings.app_title)
     st.markdown(
@@ -86,6 +94,8 @@ def main() -> None:
                 st.caption("تم إعداد تسجيل دخول YouTube على الخادم.")
             else:
                 st.caption("قد يطلب YouTube تسجيل الدخول عند التشغيل من استضافة سحابية.")
+            if browser_user_agent:
+                st.caption("تم التعرف على المتصفح تلقائيًا.")
 
         source_signature = (
             input_mode,
@@ -241,7 +251,11 @@ def main() -> None:
                                 uploaded_file.name,
                             )
                         else:
-                            duration_seconds = youtube.probe_youtube_duration(youtube_url, settings)
+                            duration_seconds = youtube.probe_youtube_duration(
+                                youtube_url,
+                                settings,
+                                request_user_agent=browser_user_agent,
+                            )
                         estimate = cost.estimate_from_minutes(
                             settings,
                             duration_seconds / 60,
@@ -303,6 +317,7 @@ def main() -> None:
                     "voice_style": voice_style,
                     "output_format": output_format,
                     "preflight_duration_seconds": pending_confirmation["duration_seconds"],
+                    "browser_user_agent": browser_user_agent,
                 }
                 if uploaded_file:
                     safe_name = storage.safe_filename(uploaded_file.name)

@@ -47,6 +47,17 @@ def yt_dlp_available() -> bool:
     return importlib.util.find_spec("yt_dlp") is not None
 
 
+def browser_user_agent(headers, fallback: str = "") -> str:
+    """Return a safe User-Agent from the current Streamlit request headers."""
+    detected = ""
+    try:
+        detected = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+    except (AttributeError, TypeError):
+        detected = ""
+    normalized = re.sub(r"[\r\n]+", " ", detected or fallback).strip()
+    return normalized[:1024]
+
+
 def _python_deno_path() -> str | None:
     try:
         import deno
@@ -198,7 +209,7 @@ def _append_command_log(log_path: Path | None, args: list[str], stdout: str, std
             log_file.write(stderr + "\n")
 
 
-def _access_args(settings: Settings) -> list[str]:
+def _access_args(settings: Settings, request_user_agent: str = "") -> list[str]:
     args: list[str] = []
     js_runtime = _detect_js_runtime(settings)
     if js_runtime:
@@ -212,14 +223,15 @@ def _access_args(settings: Settings) -> list[str]:
         args.extend(["--cookies", str(cookies_path)])
     elif settings.yt_dlp_cookies_from_browser:
         args.extend(["--cookies-from-browser", settings.yt_dlp_cookies_from_browser])
-    if settings.yt_dlp_user_agent:
-        args.extend(["--user-agent", settings.yt_dlp_user_agent])
+    user_agent = browser_user_agent({}, request_user_agent or settings.yt_dlp_user_agent)
+    if user_agent:
+        args.extend(["--user-agent", user_agent])
     if settings.yt_dlp_proxy:
         args.extend(["--proxy", settings.yt_dlp_proxy])
     return args
 
 
-def probe_youtube_duration(url: str, settings: Settings) -> float:
+def probe_youtube_duration(url: str, settings: Settings, request_user_agent: str = "") -> float:
     """Read YouTube metadata without downloading the media file."""
     if not validate_youtube_url(url):
         raise YouTubeError("رابط YouTube غير صالح.")
@@ -234,7 +246,7 @@ def probe_youtube_duration(url: str, settings: Settings) -> float:
         "--skip-download",
         "--dump-single-json",
         "--no-warnings",
-        *_access_args(settings),
+        *_access_args(settings, request_user_agent),
         url,
     ]
     try:
@@ -262,7 +274,13 @@ def probe_youtube_duration(url: str, settings: Settings) -> float:
     return duration
 
 
-def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_path: Path | None = None) -> Path:
+def download_youtube_audio(
+    url: str,
+    job_path: Path,
+    settings: Settings,
+    log_path: Path | None = None,
+    request_user_agent: str = "",
+) -> Path:
     if not validate_youtube_url(url):
         raise YouTubeError("رابط YouTube غير صالح.")
     if not yt_dlp_available():
@@ -298,7 +316,7 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
     ]
 
     js_runtime = _detect_js_runtime(settings)
-    access_args = _access_args(settings)
+    access_args = _access_args(settings, request_user_agent)
 
     log_event(
         settings,
@@ -314,7 +332,7 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
             or settings.yt_dlp_cookies_base64
             or settings.yt_dlp_cookies_from_browser
         ),
-        user_agent_configured=bool(settings.yt_dlp_user_agent),
+        user_agent_configured=bool(request_user_agent or settings.yt_dlp_user_agent),
         proxy_configured=bool(settings.yt_dlp_proxy),
     )
     combined_output: list[str] = []

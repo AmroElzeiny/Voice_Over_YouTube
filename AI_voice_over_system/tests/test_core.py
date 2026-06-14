@@ -67,6 +67,20 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("--skip-download", command)
         self.assertIn("--dump-single-json", command)
 
+    def test_browser_user_agent_is_detected_and_sanitized(self) -> None:
+        detected = youtube.browser_user_agent(
+            {"User-Agent": "Mozilla/5.0 Test\r\nInjected"},
+            "Fallback",
+        )
+        self.assertEqual(detected, "Mozilla/5.0 Test Injected")
+        self.assertEqual(youtube.browser_user_agent({}, "Fallback Agent"), "Fallback Agent")
+
+    def test_request_user_agent_overrides_configured_fallback(self) -> None:
+        settings = replace(self.settings, yt_dlp_user_agent="Configured Agent")
+        with patch("src.youtube._detect_js_runtime", return_value=None):
+            args = youtube._access_args(settings, "Detected Browser Agent")
+        self.assertEqual(args[args.index("--user-agent") + 1], "Detected Browser Agent")
+
     def test_youtube_auto_runtime_uses_python_deno_binary(self) -> None:
         with (
             patch("src.youtube.shutil.which", return_value=None),
@@ -146,6 +160,25 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("youtube:player_client=web_safari", calls[2])
         hls_format = calls[2][calls[2].index("--format") + 1]
         self.assertIn("m3u8", hls_format)
+
+    def test_youtube_worker_keeps_detected_browser_identity(self) -> None:
+        job = {
+            "job_id": "browser-agent-job",
+            "input_type": "youtube",
+            "source_name_or_url": "https://youtu.be/abc123",
+            "config_json": {"browser_user_agent": "Detected Browser Agent"},
+        }
+        expected = Path(self.temp_dir.name) / "downloaded.mp3"
+        with patch("src.worker.youtube.download_youtube_audio", return_value=expected) as download:
+            result = worker._load_source(
+                self.settings,
+                job,
+                Path(self.temp_dir.name),
+                Path(self.temp_dir.name) / "job.log",
+            )
+
+        self.assertEqual(result, expected)
+        self.assertEqual(download.call_args.kwargs["request_user_agent"], "Detected Browser Agent")
 
     def test_uploaded_duration_uses_ffprobe_and_restores_stream(self) -> None:
         uploaded = io.BytesIO(b"fake media")

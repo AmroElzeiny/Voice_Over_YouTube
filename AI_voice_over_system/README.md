@@ -130,11 +130,15 @@ Then add these values in **App settings > Secrets**:
 
 ```toml
 YT_DLP_COOKIES_BASE64 = "paste_the_base64_value_here"
-YT_DLP_USER_AGENT = "paste_the_full_browser_user_agent_here"
 YT_DLP_PROXY = ""
 ```
 
-Export fresh YouTube cookies in Netscape format. Cookie files are account credentials:
+The dashboard detects each user's browser User-Agent automatically through
+`st.context.headers` and stores it with the background job. `YT_DLP_USER_AGENT` is only
+an optional server-side fallback; dashboard users do not need to enter it.
+
+The app owner configures the cookies once; ordinary dashboard users do not provide
+cookies. Export fresh YouTube cookies in Netscape format. Cookie files are account credentials:
 never commit or share them. Some YouTube checks bind the browser session to its public
 IP. If fresh cookies still fail on Streamlit Cloud, `YT_DLP_PROXY` must use the same
 public IP where the cookies were refreshed, or the video must be uploaded directly.

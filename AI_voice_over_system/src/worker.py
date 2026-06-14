@@ -64,13 +64,19 @@ def _progress(settings: Settings, job_id: str, base: float, span: float) -> Call
 
 def _load_source(settings: Settings, job: dict[str, Any], path: Path, log_path: Path) -> Path:
     src_dir = source_dir(settings, job["job_id"])
+    config = job.get("config_json") or {}
     if job["input_type"] == "youtube":
         existing = find_first_file(src_dir, ["youtube_source.*"])
         if existing:
             return existing
-        return youtube.download_youtube_audio(job["source_name_or_url"], src_dir, settings, log_path)
+        return youtube.download_youtube_audio(
+            job["source_name_or_url"],
+            src_dir,
+            settings,
+            log_path,
+            request_user_agent=str(config.get("browser_user_agent") or ""),
+        )
 
-    config = job.get("config_json") or {}
     source_file = config.get("source_file")
     if source_file:
         candidate = src_dir / source_file
