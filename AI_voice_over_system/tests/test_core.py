@@ -19,6 +19,7 @@ from src.tts import (
     schedule_tts_blocks,
 )
 from src.youtube import validate_youtube_url, yt_dlp_available
+from tools.local_youtube_audio import build_ydl_options
 import app as streamlit_app
 
 
@@ -55,56 +56,21 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertTrue(validate_youtube_url("https://youtu.be/abc123"))
         self.assertFalse(validate_youtube_url("https://notyoutube.com/watch?v=abc123"))
 
-    def test_youtube_duration_uses_metadata_without_download(self) -> None:
-        completed = type(
-            "Completed",
-            (),
-            {"returncode": 0, "stdout": json.dumps({"duration": 125.5}), "stderr": ""},
-        )()
-        with patch("src.youtube.subprocess.run", return_value=completed) as run:
-            duration = youtube.probe_youtube_duration("https://youtu.be/abc123", self.settings)
-        self.assertEqual(duration, 125.5)
-        command = run.call_args.args[0]
-        self.assertIn("--skip-download", command)
-        self.assertIn("--dump-single-json", command)
+    def test_cloud_flow_has_no_metadata_probe_or_visitor_browser_detection(self) -> None:
+        self.assertFalse(hasattr(youtube, "probe_youtube_duration"))
+        self.assertFalse(hasattr(youtube, "browser_user_agent"))
+        self.assertFalse(hasattr(streamlit_app, "detect_browser_user_agent"))
 
-    def test_browser_user_agent_is_detected_and_sanitized(self) -> None:
-        detected = youtube.browser_user_agent(
-            {"User-Agent": "Mozilla/5.0 Test\r\nInjected"},
-            "Fallback",
+    def test_only_explicit_server_user_agent_is_used(self) -> None:
+        settings = replace(
+            self.settings,
+            yt_dlp_user_agent="Configured Agent",
+            yt_dlp_cookies_from_browser="chrome",
         )
-        self.assertEqual(detected, "Mozilla/5.0 Test Injected")
-        self.assertEqual(youtube.browser_user_agent({}, "Fallback Agent"), "Fallback Agent")
-        self.assertEqual(
-            streamlit_app.detect_browser_user_agent(
-                {"User-Agent": "Mozilla/5.0 App\r\nInjected"},
-                "Fallback",
-            ),
-            "Mozilla/5.0 App Injected",
-        )
-
-    def test_youtube_duration_compatibility_with_cached_old_module(self) -> None:
-        with patch(
-            "app.youtube.probe_youtube_duration",
-            side_effect=[
-                TypeError("unexpected keyword argument 'request_user_agent'"),
-                42.0,
-            ],
-        ) as probe:
-            duration = streamlit_app.probe_youtube_duration_compat(
-                "https://youtu.be/abc123",
-                self.settings,
-                "Detected Agent",
-            )
-
-        self.assertEqual(duration, 42.0)
-        self.assertEqual(probe.call_count, 2)
-
-    def test_request_user_agent_overrides_configured_fallback(self) -> None:
-        settings = replace(self.settings, yt_dlp_user_agent="Configured Agent")
         with patch("src.youtube._detect_js_runtime", return_value=None):
-            args = youtube._access_args(settings, "Detected Browser Agent")
-        self.assertEqual(args[args.index("--user-agent") + 1], "Detected Browser Agent")
+            args = youtube._common_args(settings, include_cookies=False)
+        self.assertEqual(args[args.index("--user-agent") + 1], "Configured Agent")
+        self.assertNotIn("--cookies-from-browser", args)
 
     def test_youtube_auto_runtime_uses_python_deno_binary(self) -> None:
         with (
@@ -112,7 +78,7 @@ class CoreBehaviorTests(unittest.TestCase):
             patch("src.youtube._python_deno_path", return_value="/app/bin/deno"),
         ):
             runtime = youtube._detect_js_runtime(self.settings)
-            access_args = youtube._access_args(self.settings)
+            access_args = youtube._common_args(self.settings, include_cookies=False)
 
         self.assertEqual(runtime, "deno:/app/bin/deno")
         self.assertEqual(access_args[:2], ["--js-runtimes", "deno:/app/bin/deno"])
@@ -128,7 +94,7 @@ class CoreBehaviorTests(unittest.TestCase):
         )
 
         with patch("src.youtube._detect_js_runtime", return_value=None):
-            args = youtube._access_args(settings)
+            args = youtube._common_args(settings, include_cookies=True)
 
         cookies_path = Path(args[args.index("--cookies") + 1])
         self.assertTrue(cookies_path.exists())
@@ -142,7 +108,7 @@ class CoreBehaviorTests(unittest.TestCase):
             patch("src.youtube._detect_js_runtime", return_value=None),
             self.assertRaisesRegex(youtube.YouTubeError, "YT_DLP_COOKIES_BASE64"),
         ):
-            youtube._access_args(settings)
+            youtube._common_args(settings, include_cookies=True)
 
     def test_youtube_403_has_specific_message(self) -> None:
         event, message = youtube._classify_failure(
@@ -150,37 +116,40 @@ class CoreBehaviorTests(unittest.TestCase):
             "fragment not found; Skipping fragment 22\n"
             "ERROR: The downloaded file is empty"
         )
-        self.assertEqual(event, "youtube_forbidden")
-        self.assertIn("PO Token", message)
+        self.assertEqual(event, youtube.YOUTUBE_MEDIA_403)
+        self.assertIn("رفع ملف الصوت", message)
+
+    def test_po_message_does_not_claim_an_attempt_without_a_provider(self) -> None:
+        event, message = youtube._classify_failure(
+            "PO token required for this format",
+            provider_ready=False,
+        )
+        self.assertEqual(event, youtube.YOUTUBE_POT_PROVIDER_MISSING)
+        self.assertNotIn("بعد PO Token", message)
 
     def test_missing_javascript_runtime_has_specific_message(self) -> None:
         event, _message = youtube._classify_failure(
             "No supported JavaScript runtime could be found"
         )
-        self.assertEqual(event, "youtube_js_runtime")
+        self.assertEqual(event, youtube.YOUTUBE_EJS_MISSING)
 
-    def test_youtube_download_retries_with_embedded_then_hls(self) -> None:
+    def test_youtube_download_uses_one_anonymous_strategy(self) -> None:
         source_dir = Path(self.temp_dir.name) / "job" / "source"
         log_path = Path(self.temp_dir.name) / "job" / "youtube.log"
         calls: list[list[str]] = []
 
         def fake_run(args, **_kwargs):
             calls.append(args)
-            if len(calls) == 3:
-                source_dir.mkdir(parents=True, exist_ok=True)
-                (source_dir / "youtube_source.mp3").write_bytes(b"x" * 2048)
-                return type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
-            return type(
-                "Completed",
-                (),
-                {"returncode": 1, "stdout": "", "stderr": "HTTP Error 403: Forbidden"},
-            )()
+            source_dir.mkdir(parents=True, exist_ok=True)
+            (source_dir / "youtube_source.mp3").write_bytes(b"x" * 2048)
+            return type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
 
         with (
             patch("src.youtube.subprocess.run", side_effect=fake_run),
-            patch("src.youtube._access_args", return_value=[]),
-            patch("src.youtube._wpc_browser_path", return_value=None),
-            patch("src.youtube._impersonation_available", return_value=False),
+            patch("src.youtube._common_args", return_value=[]),
+            patch("src.youtube.collect_diagnostics", return_value={"ejs_available": True, "yt_dlp_version": "test", "deno_version": "test", "impersonation_available": False, "proxy_configured": False}),
+            patch("src.youtube._provider_configuration", return_value={"configured": False, "plugin_detected": False, "ready": False}),
+            patch("src.youtube._download_external", return_value=None),
             patch("src.youtube.media.probe_duration", return_value=12.0),
         ):
             output = youtube.download_youtube_audio(
@@ -191,37 +160,111 @@ class CoreBehaviorTests(unittest.TestCase):
             )
 
         self.assertEqual(output.name, "youtube_source.mp3")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 1)
         self.assertNotIn("--extractor-args", calls[0])
-        self.assertIn("youtube:player_client=web_embedded", calls[1])
-        self.assertIn("youtube:player_client=web_safari", calls[2])
-        hls_format = calls[2][calls[2].index("--format") + 1]
-        self.assertIn("m3u8", hls_format)
-        self.assertIn("--abort-on-unavailable-fragments", calls[2])
 
-    def test_youtube_po_token_strategy_uses_headless_chromium(self) -> None:
-        with (
-            patch("src.youtube._wpc_browser_path", return_value="/usr/bin/chromium"),
-            patch("src.youtube._xvfb_path", return_value="/usr/bin/xvfb-run"),
-            patch("src.youtube._impersonation_available", return_value=True),
-        ):
-            strategies = youtube._download_strategies()
-
-        po_strategy = next(item for item in strategies if item["name"] == "mweb_po_token")
-        self.assertIn("youtube:player_client=mweb", po_strategy["extra_args"])
-        self.assertIn(
-            "youtubepot-wpc:browser_path=/usr/bin/chromium",
-            po_strategy["extra_args"],
+    def test_strategies_are_configured_and_capped_at_three(self) -> None:
+        settings = replace(
+            self.settings,
+            yt_dlp_cookies_base64="configured",
+            yt_dlp_cloud_direct_enabled=True,
         )
-        self.assertEqual(po_strategy["command_prefix"], ["/usr/bin/xvfb-run", "-a"])
-        self.assertTrue(any(item["name"] == "safari_hls_fresh" for item in strategies))
+        provider = {
+            "ready": True,
+            "extractor_arg": "youtubepot-bgutilhttp:base_url=https://provider.example",
+        }
+        with patch("src.youtube._provider_configuration", return_value=provider):
+            strategies = youtube._strategies(settings)
+        self.assertLessEqual(len(strategies), 3)
+        self.assertEqual(
+            [item["name"] for item in strategies],
+            ["configured_po_provider", "configured_cookies", "anonymous_cloud"],
+        )
 
-    def test_youtube_worker_keeps_detected_browser_identity(self) -> None:
+        with patch(
+            "src.youtube._provider_configuration",
+            return_value={"ready": False, "extractor_arg": ""},
+        ):
+            without_provider = youtube._strategies(settings)
+        self.assertNotIn(
+            "configured_po_provider",
+            [item["name"] for item in without_provider],
+        )
+
+    def test_authentication_failure_is_not_repeated_for_anonymous_mode(self) -> None:
+        calls = []
+
+        def fake_run(args, **_kwargs):
+            calls.append(args)
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "Sign in to confirm you're not a bot",
+                },
+            )()
+
+        with (
+            patch("src.youtube.subprocess.run", side_effect=fake_run),
+            patch("src.youtube._common_args", return_value=[]),
+            patch("src.youtube.collect_diagnostics", return_value={"ejs_available": True, "yt_dlp_version": "test", "deno_version": "test", "impersonation_available": False, "proxy_configured": False}),
+            patch("src.youtube._provider_configuration", return_value={"configured": False, "plugin_detected": False, "ready": False}),
+            patch("src.youtube._download_external", return_value=None),
+        ):
+            with self.assertRaises(youtube.YouTubeError) as raised:
+                youtube.download_youtube_audio(
+                    "https://youtu.be/abc123",
+                    Path(self.temp_dir.name) / "auth" / "source",
+                    self.settings,
+                )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(raised.exception.failure_type, youtube.YOUTUBE_IP_REPUTATION_BLOCK)
+        self.assertTrue(raised.exception.needs_local_audio)
+
+    def test_download_never_exceeds_three_distinct_attempts(self) -> None:
+        calls = []
+        strategies = [
+            {
+                "name": f"strategy-{index}",
+                "player_client": "default",
+                "include_cookies": False,
+                "extra_args": [],
+            }
+            for index in range(4)
+        ]
+
+        def fake_run(args, **_kwargs):
+            calls.append(args)
+            return type(
+                "Completed",
+                (),
+                {"returncode": 1, "stdout": "", "stderr": "network timeout"},
+            )()
+
+        with (
+            patch("src.youtube.subprocess.run", side_effect=fake_run),
+            patch("src.youtube._strategies", return_value=strategies),
+            patch("src.youtube._common_args", return_value=[]),
+            patch("src.youtube.collect_diagnostics", return_value={"ejs_available": True, "yt_dlp_version": "test", "deno_version": "test", "impersonation_available": False, "proxy_configured": False}),
+            patch("src.youtube._provider_configuration", return_value={"configured": False, "plugin_detected": False, "ready": False}),
+            patch("src.youtube._download_external", return_value=None),
+            self.assertRaises(youtube.YouTubeError),
+        ):
+            youtube.download_youtube_audio(
+                "https://youtu.be/abc123",
+                Path(self.temp_dir.name) / "attempts" / "source",
+                self.settings,
+            )
+        self.assertEqual(len(calls), 3)
+
+    def test_youtube_worker_does_not_forward_browser_identity(self) -> None:
         job = {
-            "job_id": "browser-agent-job",
+            "job_id": "youtube-job",
             "input_type": "youtube",
             "source_name_or_url": "https://youtu.be/abc123",
-            "config_json": {"browser_user_agent": "Detected Browser Agent"},
+            "config_json": {},
         }
         expected = Path(self.temp_dir.name) / "downloaded.mp3"
         with patch("src.worker.youtube.download_youtube_audio", return_value=expected) as download:
@@ -233,32 +276,81 @@ class CoreBehaviorTests(unittest.TestCase):
             )
 
         self.assertEqual(result, expected)
-        self.assertEqual(download.call_args.kwargs["request_user_agent"], "Detected Browser Agent")
+        self.assertEqual(len(download.call_args.args), 4)
+        self.assertEqual(download.call_args.kwargs, {})
 
-    def test_youtube_worker_falls_back_for_cached_old_module(self) -> None:
-        job = {
-            "job_id": "old-module-job",
-            "input_type": "youtube",
-            "source_name_or_url": "https://youtu.be/abc123",
-            "config_json": {"browser_user_agent": "Detected Browser Agent"},
-        }
-        expected = Path(self.temp_dir.name) / "downloaded.mp3"
-        with patch(
-            "src.worker.youtube.download_youtube_audio",
-            side_effect=[
-                TypeError("unexpected keyword argument 'request_user_agent'"),
-                expected,
-            ],
-        ) as download:
-            result = worker._load_source(
+    def test_local_audio_pause_can_resume_the_same_job(self) -> None:
+        job_id = jobs.create_job(
+            self.settings,
+            "youtube",
+            "https://youtu.be/abc123",
+            ["ar"],
+            {},
+            {},
+        )
+        jobs.wait_for_local_audio(self.settings, job_id, "blocked")
+        self.assertEqual(jobs.get_job(self.settings, job_id)["status"], "needs_local_audio")
+        jobs.update_job(
+            self.settings,
+            job_id,
+            input_type="upload",
+            source_name_or_url="audio.mp3",
+            status="queued",
+            config_json={"source_file": "audio.mp3", "original_youtube_url": "https://youtu.be/abc123"},
+        )
+        resumed = jobs.get_job(self.settings, job_id)
+        self.assertEqual(resumed["job_id"], job_id)
+        self.assertEqual(resumed["input_type"], "upload")
+        source_folder = self.settings.jobs_dir / job_id / "source"
+        source_folder.mkdir(parents=True, exist_ok=True)
+        expected_source = source_folder / "audio.mp3"
+        expected_source.write_bytes(b"local audio")
+        with patch("src.worker.youtube.download_youtube_audio") as download:
+            loaded = worker._load_source(
                 self.settings,
-                job,
-                Path(self.temp_dir.name),
-                Path(self.temp_dir.name) / "job.log",
+                resumed,
+                self.settings.jobs_dir / job_id,
+                self.settings.jobs_dir / job_id / "logs" / "job.log",
             )
+        self.assertEqual(loaded, expected_source)
+        download.assert_not_called()
 
-        self.assertEqual(result, expected)
-        self.assertEqual(download.call_count, 2)
+    def test_local_helper_uses_browser_cookies_only_when_requested(self) -> None:
+        plain = build_ydl_options(Path(self.temp_dir.name))
+        browser = build_ydl_options(Path(self.temp_dir.name), "chrome")
+        self.assertNotIn("cookiesfrombrowser", plain)
+        self.assertEqual(browser["cookiesfrombrowser"], ("chrome",))
+        self.assertEqual(browser["postprocessors"][0]["preferredcodec"], "mp3")
+
+    def test_external_downloader_accepts_audio_bytes(self) -> None:
+        response = type(
+            "Response",
+            (),
+            {
+                "content": b"x" * 2048,
+                "headers": {"Content-Type": "audio/mpeg"},
+                "raise_for_status": lambda self: None,
+            },
+        )()
+        settings = replace(
+            self.settings,
+            youtube_external_downloader_url="https://downloader.example/audio",
+            youtube_external_downloader_token="secret-token",
+        )
+        output_dir = Path(self.temp_dir.name) / "external"
+        output_dir.mkdir()
+        with (
+            patch("src.youtube.requests.post", return_value=response) as post,
+            patch("src.youtube.media.probe_duration", return_value=5.0),
+        ):
+            output = youtube._download_external(
+                "https://youtu.be/abc123",
+                "job-1",
+                output_dir,
+                settings,
+            )
+        self.assertEqual(output.read_bytes(), b"x" * 2048)
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer secret-token")
 
     def test_uploaded_duration_uses_ffprobe_and_restores_stream(self) -> None:
         uploaded = io.BytesIO(b"fake media")
@@ -399,21 +491,24 @@ class CoreBehaviorTests(unittest.TestCase):
         secret = "configured-test-secret-value-1234567890"
         cookie_secret = "cookie-secret-value-abcdefghijklmnopqrstuvwxyz"
         proxy_secret = "http://user:password@proxy.example:8080"
+        external_token = "external-downloader-token-1234567890"
         settings = replace(
             self.settings,
             openai_api_key=secret,
             yt_dlp_cookies_base64=cookie_secret,
             yt_dlp_proxy=proxy_secret,
+            youtube_external_downloader_token=external_token,
         )
         log_event(
             settings,
             "redaction_test",
-            f"Key value: {secret}; cookies: {cookie_secret}; proxy: {proxy_secret}",
+            f"Key value: {secret}; cookies: {cookie_secret}; proxy: {proxy_secret}; external: {external_token}",
         )
         content = settings.app_log_path.read_text(encoding="utf-8")
         self.assertNotIn(secret, content)
         self.assertNotIn(cookie_secret, content)
         self.assertNotIn(proxy_secret, content)
+        self.assertNotIn(external_token, content)
         self.assertIn("REDACTED_KEY", content)
         self.assertIn("REDACTED_SECRET", content)
         close_logging(settings)
@@ -498,6 +593,26 @@ class CoreBehaviorTests(unittest.TestCase):
         jobs.fail_job(self.settings, job_id, "should not replace cancellation")
         self.assertEqual(jobs.get_job(self.settings, job_id)["status"], "cancelled")
 
+    def test_worker_pauses_cloud_block_instead_of_failing(self) -> None:
+        job_id = jobs.create_job(
+            self.settings,
+            input_type="youtube",
+            source_name_or_url="https://youtu.be/example",
+            selected_languages=["en"],
+            estimated_cost={},
+            config={},
+        )
+        error = youtube.YouTubeError(
+            "ارفع ملف الصوت",
+            youtube.YOUTUBE_MEDIA_403,
+            needs_local_audio=True,
+        )
+        with patch("src.worker._load_source", side_effect=error):
+            worker.run_job(self.settings, job_id)
+        saved = jobs.get_job(self.settings, job_id)
+        self.assertEqual(saved["status"], "needs_local_audio")
+        self.assertEqual(saved["progress_percent"], 3)
+
     def test_language_pipeline_logs_after_each_stage_completes(self) -> None:
         source = Path(self.temp_dir.name) / "source.mp3"
         source.write_bytes(b"source")
@@ -531,8 +646,10 @@ class CoreBehaviorTests(unittest.TestCase):
 
         with (
             patch("src.worker._load_source", return_value=source),
+            patch("src.worker.media.ffprobe_json", return_value={"format": {"duration": "10"}}),
             patch("src.worker.media.extract_or_normalize_audio", side_effect=fake_extract),
             patch("src.worker.media.probe_duration", return_value=10.0),
+            patch("src.worker.cost.budget_status", return_value={"allowed": True, "available_usd": None, "source": "none"}),
             patch(
                 "src.worker.chunking.create_audio_chunks",
                 return_value=[{"filename": "chunk_000.mp3", "size_bytes": 100}],
@@ -575,16 +692,15 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertNotRegex(requirements, r"(?m)^pydub\s*$")
         self.assertIn('audioop-lts; python_version >= "3.13"', requirements)
         self.assertIn("deno==2.8.3", requirements)
-        self.assertIn("yt-dlp[default]>=2026.6.9", requirements)
-        self.assertIn("curl-cffi==0.13.0", requirements)
-        self.assertIn("yt-dlp-getpot-wpc==1.0.0", requirements)
+        self.assertIn("yt-dlp[default,curl-cffi]>=2026.6.9", requirements)
+        self.assertNotIn("yt-dlp-getpot-wpc", requirements)
 
         repository_root = project_root.parent
         system_packages = (repository_root / "packages.txt").read_text(encoding="utf-8")
         self.assertIn("ffmpeg", system_packages)
-        self.assertIn("chromium", system_packages)
-        self.assertIn("xvfb", system_packages)
-        self.assertIn("xauth", system_packages)
+        self.assertNotIn("chromium", system_packages)
+        self.assertNotIn("xvfb", system_packages)
+        self.assertNotIn("xauth", system_packages)
         self.assertTrue((repository_root / ".streamlit" / "config.toml").exists())
 
         app_source = (project_root / "app.py").read_text(encoding="utf-8")
@@ -594,6 +710,9 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertNotIn("إنفاق هذا الشهر", app_source)
         self.assertIn('columns[1].metric("تكلفة كل الملفات"', app_source)
         self.assertIn('columns[3].metric("الرصيد المحسوب"', app_source)
+        self.assertNotIn("st.context.headers", app_source)
+        self.assertNotIn("browser_user_agent", app_source)
+        self.assertNotIn("probe_youtube_duration", app_source)
 
 
 if __name__ == "__main__":

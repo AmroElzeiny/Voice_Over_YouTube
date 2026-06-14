@@ -132,6 +132,8 @@ def render_job_status(job: dict[str, Any] | None, dismissed_job_id: str | None =
         "completed": "مكتملة",
         "failed": "فشلت",
         "interrupted": "منقطعة",
+        "needs_local_audio": "بانتظار ملف الصوت",
+        "needs_budget": "بانتظار رصيد كافٍ",
     }.get(job.get("status"), job.get("status", "غير معروف"))
 
     st.markdown(f'<span class="status-chip">{status_ar}</span>', unsafe_allow_html=True)
@@ -229,6 +231,8 @@ def render_job_history(history: list[dict[str, Any]]) -> None:
                 "completed": "مكتملة",
                 "failed": "فشلت",
                 "interrupted": "منقطعة",
+                "needs_local_audio": "بانتظار ملف الصوت",
+                "needs_budget": "بانتظار رصيد كافٍ",
             }.get(job.get("status"), str(job.get("status") or "غير معروف"))
             st.write(f"**{status}** - {job.get('source_name_or_url') or 'مصدر غير معروف'}")
             if job.get("error_message"):

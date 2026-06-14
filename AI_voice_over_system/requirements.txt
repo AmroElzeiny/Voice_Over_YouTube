@@ -1,9 +1,7 @@
 streamlit
 openai
-yt-dlp[default]>=2026.6.9
+yt-dlp[default,curl-cffi]>=2026.6.9
 deno==2.8.3
-curl-cffi==0.13.0
-yt-dlp-getpot-wpc==1.0.0
 python-dotenv
 pydub-ng==0.2.0
 audioop-lts; python_version >= "3.13"

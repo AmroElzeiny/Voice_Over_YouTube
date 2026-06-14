@@ -26,6 +26,10 @@ class JobCancelled(RuntimeError):
     """Raised cooperatively when the user requests cancellation."""
 
 
+class BudgetBlocked(RuntimeError):
+    """Raised when the configured app balance cannot cover the real estimate."""
+
+
 def check_cancelled(settings: Settings, job_id: str) -> None:
     if jobs.is_cancel_requested(settings, job_id):
         log_event(settings, "job_cancel_detected", "Cancellation request detected.", job_id=job_id)
@@ -69,24 +73,12 @@ def _load_source(settings: Settings, job: dict[str, Any], path: Path, log_path: 
         existing = find_first_file(src_dir, ["youtube_source.*"])
         if existing:
             return existing
-        request_user_agent = str(config.get("browser_user_agent") or "")
-        try:
-            return youtube.download_youtube_audio(
-                job["source_name_or_url"],
-                src_dir,
-                settings,
-                log_path,
-                request_user_agent=request_user_agent,
-            )
-        except TypeError as exc:
-            if "request_user_agent" not in str(exc):
-                raise
-            return youtube.download_youtube_audio(
-                job["source_name_or_url"],
-                src_dir,
-                settings,
-                log_path,
-            )
+        return youtube.download_youtube_audio(
+            job["source_name_or_url"],
+            src_dir,
+            settings,
+            log_path,
+        )
 
     source_file = config.get("source_file")
     if source_file:
@@ -213,6 +205,7 @@ def run_job(settings: Settings, job_id: str) -> None:
         check_cancelled(settings, job_id)
         source_path = _load_source(settings, job, path, log_path)
         check_cancelled(settings, job_id)
+        media.ffprobe_json(source_path)
         log_event(
             settings,
             "source_ready",
@@ -245,6 +238,30 @@ def run_job(settings: Settings, job_id: str) -> None:
 
         early_estimate = cost.estimate_from_minutes(settings, duration_seconds / 60, len(selected_languages))
         jobs.update_job(settings, job_id, estimated_cost_json=early_estimate)
+        recorded_usage = cost.recorded_jobs_summary(jobs.list_all_jobs(settings))
+        budget = cost.budget_status(
+            settings,
+            early_estimate,
+            None,
+            recorded_cost_usd=recorded_usage["total_usd"],
+        )
+        log_event(
+            settings,
+            "post_download_budget_check",
+            "Real media duration and budget were checked before API use.",
+            job_id=job_id,
+            job_path=path,
+            duration_seconds=duration_seconds,
+            estimated_total_usd=early_estimate.get("total_usd"),
+            available_usd=budget.get("available_usd"),
+            allowed=budget.get("allowed"),
+            balance_source=budget.get("source"),
+        )
+        if not budget.get("allowed", True):
+            raise BudgetBlocked(
+                "الرصيد المحسوب أقل من التكلفة المتوقعة بعد قراءة مدة الملف. "
+                "زد الرصيد المبدئي أو قلّل عدد اللغات، ثم استكمل العملية."
+            )
 
         jobs.set_progress(settings, job_id, "تقسيم الصوت إلى أجزاء آمنة", 18)
         check_cancelled(settings, job_id)
@@ -375,6 +392,31 @@ def run_job(settings: Settings, job_id: str) -> None:
             job_id=job_id,
             job_path=path,
         )
+    except BudgetBlocked as exc:
+        jobs.wait_for_budget(settings, job_id, str(exc))
+        log_event(
+            settings,
+            "job_waiting_for_budget",
+            str(exc),
+            level="WARNING",
+            job_id=job_id,
+            job_path=path,
+        )
+    except youtube.YouTubeError as exc:
+        log_event(
+            settings,
+            "youtube_source_failed",
+            str(exc),
+            level="WARNING" if exc.needs_local_audio else "ERROR",
+            job_id=job_id,
+            job_path=path,
+            failure_type=exc.failure_type,
+            recovery="upload_local_audio" if exc.needs_local_audio else "none",
+        )
+        if exc.needs_local_audio:
+            jobs.wait_for_local_audio(settings, job_id, str(exc))
+        else:
+            jobs.fail_job(settings, job_id, str(exc))
     except Exception as exc:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as log_file:

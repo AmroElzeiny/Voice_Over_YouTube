@@ -11,7 +11,8 @@ from typing import Any
 from .config import Settings
 
 RUNNING_STATUSES = {"queued", "running", "cancel_requested"}
-FINISHED_STATUSES = {"completed", "failed", "interrupted", "cancelled"}
+WAITING_STATUSES = {"needs_local_audio", "needs_budget"}
+FINISHED_STATUSES = {"completed", "failed", "interrupted", "cancelled", *WAITING_STATUSES}
 
 _STARTUP_RECOVERY_DONE = False
 
@@ -255,6 +256,30 @@ def fail_job(settings: Settings, job_id: str, message: str) -> None:
         status="failed",
         current_step="فشلت العملية",
         progress_percent=100,
+        error_message=message,
+    )
+
+
+def wait_for_local_audio(settings: Settings, job_id: str, message: str) -> None:
+    job = get_job(settings, job_id) or {}
+    update_job(
+        settings,
+        job_id,
+        status="needs_local_audio",
+        current_step="مطلوب رفع الصوت المستخرج",
+        progress_percent=float(job.get("progress_percent") or 0),
+        error_message=message,
+    )
+
+
+def wait_for_budget(settings: Settings, job_id: str, message: str) -> None:
+    job = get_job(settings, job_id) or {}
+    update_job(
+        settings,
+        job_id,
+        status="needs_budget",
+        current_step="بانتظار رصيد كافٍ",
+        progress_percent=float(job.get("progress_percent") or 0),
         error_message=message,
     )
 

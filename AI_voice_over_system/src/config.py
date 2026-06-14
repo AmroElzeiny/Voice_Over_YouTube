@@ -234,6 +234,16 @@ class Settings:
     yt_dlp_cookies_from_browser: str
     yt_dlp_user_agent: str
     yt_dlp_proxy: str
+    yt_dlp_allow_remote_ejs: bool
+    yt_dlp_pot_provider: str
+    yt_dlp_bgutil_base_url: str
+    yt_dlp_bgutil_script_home: Path | None
+    yt_dlp_retries: int
+    yt_dlp_fragment_retries: int
+    yt_dlp_extractor_retries: int
+    yt_dlp_cloud_direct_enabled: bool
+    youtube_external_downloader_url: str
+    youtube_external_downloader_token: str
     transcription_prompt: str
     translation_system_prompt: str
     translation_prompt_template: str
@@ -270,6 +280,11 @@ def load_settings() -> Settings:
     app_log_path = resolve_project_path(setting("APP_LOG_PATH", "data/logs/app.log"))
     cookies_file_raw = setting("YT_DLP_COOKIES_FILE", "")
     cookies_file = resolve_project_path(cookies_file_raw) if cookies_file_raw else None
+    bgutil_script_raw = setting("YT_DLP_BGUTIL_SCRIPT_HOME", "")
+    bgutil_script_home = resolve_project_path(bgutil_script_raw) if bgutil_script_raw else None
+    pot_provider = setting("YT_DLP_POT_PROVIDER", "none").lower()
+    if pot_provider not in {"none", "bgutil_http", "bgutil_script"}:
+        pot_provider = "none"
     naturalness_style = setting("TTS_NATURALNESS_STYLE", "warm_neutral")
     if naturalness_style not in TTS_STYLES:
         naturalness_style = "warm_neutral"
@@ -334,6 +349,16 @@ def load_settings() -> Settings:
         yt_dlp_cookies_from_browser=setting("YT_DLP_COOKIES_FROM_BROWSER", ""),
         yt_dlp_user_agent=setting("YT_DLP_USER_AGENT", ""),
         yt_dlp_proxy=setting("YT_DLP_PROXY", ""),
+        yt_dlp_allow_remote_ejs=setting_bool("YT_DLP_ALLOW_REMOTE_EJS", False),
+        yt_dlp_pot_provider=pot_provider,
+        yt_dlp_bgutil_base_url=setting("YT_DLP_BGUTIL_BASE_URL", ""),
+        yt_dlp_bgutil_script_home=bgutil_script_home,
+        yt_dlp_retries=max(0, setting_int("YT_DLP_RETRIES", 2)),
+        yt_dlp_fragment_retries=max(0, setting_int("YT_DLP_FRAGMENT_RETRIES", 1)),
+        yt_dlp_extractor_retries=max(0, setting_int("YT_DLP_EXTRACTOR_RETRIES", 2)),
+        yt_dlp_cloud_direct_enabled=setting_bool("YT_DLP_CLOUD_DIRECT_ENABLED", True),
+        youtube_external_downloader_url=setting("YOUTUBE_EXTERNAL_DOWNLOADER_URL", ""),
+        youtube_external_downloader_token=setting("YOUTUBE_EXTERNAL_DOWNLOADER_TOKEN", ""),
         transcription_prompt=setting("OPENAI_TRANSCRIPTION_PROMPT", DEFAULT_TRANSCRIPTION_PROMPT)
         or DEFAULT_TRANSCRIPTION_PROMPT,
         translation_system_prompt=setting("TRANSLATION_SYSTEM_PROMPT", DEFAULT_TRANSLATION_SYSTEM_PROMPT)

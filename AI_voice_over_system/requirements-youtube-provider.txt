@@ -1,0 +1,2 @@
+# Optional. Install this only when YT_DLP_POT_PROVIDER is configured.
+bgutil-ytdlp-pot-provider>=1.3.1

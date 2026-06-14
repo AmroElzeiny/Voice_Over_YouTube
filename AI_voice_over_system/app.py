@@ -1,38 +1,14 @@
 from __future__ import annotations
 
-import re
 import shutil
 import time
 
 import streamlit as st
 
 from src import cost, jobs, preflight, storage, tts, ui, worker, youtube
+from src.build_info import APP_BUILD_ID
 from src.config import LANGUAGES, TTS_STYLES, TTS_VOICES, load_settings
 from src.logging_utils import configure_logging, log_event
-
-
-def detect_browser_user_agent(headers, fallback: str = "") -> str:
-    """Read the current browser identity without depending on a reloaded helper module."""
-    detected = ""
-    try:
-        detected = str(headers.get("User-Agent") or headers.get("user-agent") or "")
-    except (AttributeError, TypeError):
-        detected = ""
-    return re.sub(r"[\r\n]+", " ", detected or fallback).strip()[:1024]
-
-
-def probe_youtube_duration_compat(url: str, settings, user_agent: str) -> float:
-    """Support a Streamlit rerun while an older youtube module is still cached."""
-    try:
-        return youtube.probe_youtube_duration(
-            url,
-            settings,
-            request_user_agent=user_agent,
-        )
-    except TypeError as exc:
-        if "request_user_agent" not in str(exc):
-            raise
-        return youtube.probe_youtube_duration(url, settings)
 
 
 def account_usage_summary(settings) -> dict:
@@ -64,30 +40,48 @@ def render_openai_account_status(settings) -> None:
         st.caption(f"عدد العمليات المحسوبة: {int(summary['job_count'])}")
 
 
+def render_youtube_diagnostics(settings) -> None:
+    diagnostics = youtube.collect_diagnostics(settings)
+    with st.expander("تشخيص اتصال YouTube"):
+        rows = {
+            "yt-dlp": "متاح" if diagnostics.get("yt_dlp_available") else "غير متاح",
+            "إصدار yt-dlp": diagnostics.get("yt_dlp_version") or "غير متاح",
+            "دعم EJS": "جاهز" if diagnostics.get("ejs_available") else "غير جاهز",
+            "Deno": diagnostics.get("deno_version") or "غير متاح",
+            "تقليد المتصفح": "متاح" if diagnostics.get("impersonation_available") else "غير متاح",
+            "ملف تسجيل الدخول": "مضبوط" if diagnostics.get("cookies_configured") else "غير مضبوط",
+            "الخادم الوسيط": "مضبوط" if diagnostics.get("proxy_configured") else "غير مضبوط",
+            "إعداد مزود PO Token": "مضبوط" if diagnostics.get("pot_provider_configured") else "غير مضبوط",
+            "إضافة مزود PO Token": "مكتشفة" if diagnostics.get("pot_provider_detected") else "غير مكتشفة",
+            "مزود PO Token": "جاهز" if diagnostics.get("pot_provider_ready") else "غير جاهز",
+            "التنزيل المباشر": "مفعّل" if diagnostics.get("cloud_direct_enabled") else "متوقف",
+            "عامل تنزيل خارجي": "مضبوط" if diagnostics.get("external_downloader_configured") else "غير مضبوط",
+        }
+        for label, value in rows.items():
+            st.write(f"**{label}:** {value}")
+        st.write(f"**إصدار التشغيل:** {APP_BUILD_ID}")
+        st.caption("هذه المعلومات لا تعرض المفاتيح أو محتوى ملف تسجيل الدخول.")
+
+
 def main() -> None:
     settings = load_settings()
     storage.ensure_storage(settings)
     configure_logging(settings)
     jobs.startup_recovery(settings)
     ui.setup_page(settings)
-    log_event(settings, "app_rendered", "Streamlit app rendered.")
-    try:
-        request_headers = st.context.headers
-    except Exception:
-        request_headers = {}
-    browser_user_agent = detect_browser_user_agent(
-        request_headers,
-        settings.yt_dlp_user_agent,
-    )
+    log_event(settings, "app_rendered", "Streamlit app rendered.", build_id=APP_BUILD_ID)
+    youtube.log_startup_diagnostics(settings)
 
     st.title(settings.app_title)
     st.markdown(
         '<div class="disclosure">الصوت الناتج تم إنشاؤه بالذكاء الاصطناعي.</div>',
         unsafe_allow_html=True,
     )
+    st.caption(f"إصدار التشغيل: {APP_BUILD_ID}")
 
     latest_job = jobs.get_latest_job(settings)
     active_job = jobs.get_active_job(settings)
+    waiting_job = latest_job if latest_job and latest_job.get("status") in jobs.WAITING_STATUSES else None
     dismissed_job_id = st.session_state.get("dismissed_job_id")
 
     with st.container(border=True):
@@ -100,6 +94,7 @@ def main() -> None:
         )
         uploaded_file = None
         youtube_url = ""
+        approximate_minutes = 10.0
         if input_mode == "رفع ملف":
             uploaded_file = st.file_uploader(
                 "ارفع ملف فيديو أو صوت",
@@ -112,28 +107,45 @@ def main() -> None:
             youtube_url = st.text_input(
                 "رابط YouTube",
                 placeholder="https://www.youtube.com/watch?v=...",
-                help="ضع رابط فيديو YouTube صالحًا.",
+                help="ألصق رابط فيديو YouTube العام هنا.",
+            )
+            approximate_minutes = st.number_input(
+                "المدة التقريبية بالدقائق",
+                min_value=1.0,
+                max_value=720.0,
+                value=10.0,
+                step=1.0,
+                help="نستخدمها لحساب أولي فقط. بعد تنزيل الصوت نحسب المدة الحقيقية قبل استخدام OpenAI.",
             )
             st.info("استخدم فقط الفيديوهات التي تملكها أو لديك إذن واضح لمعالجتها.")
             if settings.yt_dlp_cookies_file or settings.yt_dlp_cookies_base64:
-                st.caption("تم إعداد تسجيل دخول YouTube على الخادم.")
+                st.caption("تم إعداد ملف تعريف ارتباط YouTube")
+                st.warning(
+                    "قد تتوقف ملفات الارتباط عن العمل أو يطلب YouTube التحقق مرة أخرى. "
+                    "استخدم حسابًا مخصصًا بحذر ولا تستخدم حسابك الرئيسي."
+                )
             else:
-                st.caption("قد يطلب YouTube تسجيل الدخول عند التشغيل من استضافة سحابية.")
-            if browser_user_agent:
-                st.caption("تم التعرف على المتصفح تلقائيًا.")
+                st.caption("لم يتم إعداد ملف تعريف ارتباط YouTube")
+                st.caption("التنزيل المباشر من خوادم مجانية قد يرفضه YouTube.")
+            if settings.yt_dlp_cloud_direct_enabled:
+                st.info("سيحاول التطبيق قراءة الصوت من YouTube مباشرة.")
+            else:
+                st.info("التنزيل المباشر متوقف. يمكنك استخراج الصوت على جهازك مجانًا ثم رفعه هنا.")
+            render_youtube_diagnostics(settings)
 
         source_signature = (
             input_mode,
             uploaded_file.name if uploaded_file else "",
             uploaded_file.size if uploaded_file else 0,
             youtube_url.strip(),
+            approximate_minutes if input_mode == "رابط YouTube" else 0,
         )
         previous_signature = st.session_state.get("source_signature")
         if (
             previous_signature is not None
             and previous_signature != source_signature
             and latest_job
-            and latest_job.get("status") in jobs.FINISHED_STATUSES
+            and latest_job.get("status") in {"completed", "failed", "interrupted", "cancelled"}
             and not active_job
         ):
             st.session_state["dismissed_job_id"] = latest_job["job_id"]
@@ -253,6 +265,86 @@ def main() -> None:
                     st.warning("سيتم إيقاف العملية بأمان بعد انتهاء الخطوة الحالية.")
                     st.rerun()
 
+        if waiting_job and waiting_job.get("status") == "needs_local_audio":
+            st.warning(
+                "تعذر على خادم Streamlit قراءة الصوت مباشرة من YouTube. يمكنك استخراج الصوت "
+                "على جهازك ورفعه هنا، وبعدها ستستكمل العملية تلقائيًا."
+            )
+            waiting_config = dict(waiting_job.get("config_json") or {})
+            original_url = str(
+                waiting_config.get("original_youtube_url")
+                or waiting_job.get("source_name_or_url")
+                or ""
+            )
+            if youtube.validate_youtube_url(original_url):
+                with st.expander("طريقة استخراج الصوت على جهازك"):
+                    st.caption("شغّل هذا الأمر داخل مجلد المشروع. يمكنك إضافة --browser chrome إذا طلب YouTube تسجيل الدخول.")
+                    st.code(
+                        f'python tools/local_youtube_audio.py "{original_url}"',
+                        language="powershell",
+                    )
+            fallback_audio = st.file_uploader(
+                "ارفع ملف الصوت لهذه العملية",
+                type=["mp3", "m4a", "wav", "opus", "webm", "aac", "ogg", "flac"],
+                key=f"fallback-audio-{waiting_job['job_id']}",
+                help="اختر ملف الصوت الذي نزلته من الفيديو نفسه.",
+            )
+            fallback_too_large = bool(
+                fallback_audio
+                and fallback_audio.size > settings.max_upload_mb * 1024 * 1024
+            )
+            if fallback_too_large:
+                st.error(f"حجم الملف أكبر من الحد المسموح: {settings.max_upload_mb} MB.")
+            if st.button(
+                "رفع الصوت واستكمال العملية",
+                type="primary",
+                disabled=not fallback_audio or fallback_too_large,
+                help="يفحص الملف ثم يكمل نفس العملية دون إنشاء عملية جديدة.",
+            ):
+                source_folder = storage.source_dir(settings, waiting_job["job_id"])
+                source_folder.mkdir(parents=True, exist_ok=True)
+                for stale_file in source_folder.glob("youtube_source.*"):
+                    stale_file.unlink(missing_ok=True)
+                safe_name = storage.safe_filename(fallback_audio.name)
+                fallback_audio.seek(0)
+                storage.save_uploaded_file(fallback_audio, source_folder / safe_name)
+                waiting_config.update(
+                    {
+                        "source_file": safe_name,
+                        "original_youtube_url": original_url,
+                        "local_audio_uploaded": True,
+                    }
+                )
+                jobs.update_job(
+                    settings,
+                    waiting_job["job_id"],
+                    input_type="upload",
+                    source_name_or_url=safe_name,
+                    status="queued",
+                    current_step="فحص ملف الصوت المرفوع",
+                    error_message=None,
+                    config_json=waiting_config,
+                )
+                worker.start_job_worker(settings, waiting_job["job_id"])
+                st.success("تم رفع الصوت. ستستكمل العملية الآن.")
+                st.rerun()
+
+        if waiting_job and waiting_job.get("status") == "needs_budget":
+            st.warning("توقفت العملية قبل استخدام OpenAI لأن الرصيد المحسوب غير كافٍ.")
+            if st.button(
+                "إعادة فحص الرصيد واستكمال العملية",
+                help="استخدمه بعد تعديل الرصيد المبدئي أو إعدادات اللغات.",
+            ):
+                jobs.update_job(
+                    settings,
+                    waiting_job["job_id"],
+                    status="queued",
+                    current_step="إعادة فحص الرصيد",
+                    error_message=None,
+                )
+                worker.start_job_worker(settings, waiting_job["job_id"])
+                st.rerun()
+
         can_prepare = (
             settings.openai_api_key
             and ffmpeg_ready
@@ -260,27 +352,26 @@ def main() -> None:
             and file_size_ok
             and bool(selected_languages)
             and not active_job
+            and not waiting_job
         )
         if not pending_confirmation:
             if st.button(
                 "بدء العملية",
                 type="primary",
                 disabled=not can_prepare,
-                help="سيحسب التطبيق المدة والتكلفة أولًا.",
+                help="يعرض التكلفة المتوقعة قبل بدء العمل.",
             ):
                 try:
-                    with st.spinner("جاري قراءة مدة الملف وحساب التكلفة..."):
+                    with st.spinner("جاري حساب التكلفة المتوقعة..."):
                         if uploaded_file:
                             duration_seconds = preflight.probe_uploaded_duration(
                                 uploaded_file,
                                 uploaded_file.name,
                             )
+                            provisional = False
                         else:
-                            duration_seconds = probe_youtube_duration_compat(
-                                youtube_url,
-                                settings,
-                                browser_user_agent,
-                            )
+                            duration_seconds = float(approximate_minutes) * 60
+                            provisional = True
                         estimate = cost.estimate_from_minutes(
                             settings,
                             duration_seconds / 60,
@@ -292,11 +383,18 @@ def main() -> None:
                             None,
                             recorded_cost_usd=account_usage_summary(settings)["total_usd"],
                         )
+                        if provisional:
+                            budget = {
+                                **budget,
+                                "allowed": True,
+                                "provisional_only": True,
+                            }
                     pending_confirmation = {
                         "signature": confirmation_signature,
                         "duration_seconds": duration_seconds,
                         "estimate": estimate,
                         "budget": budget,
+                        "provisional": provisional,
                     }
                     st.session_state["start_confirmation"] = pending_confirmation
                     log_event(
@@ -322,9 +420,12 @@ def main() -> None:
             budget = pending_confirmation["budget"]
             duration_minutes = float(pending_confirmation["duration_seconds"]) / 60
             st.success(
-                f"مدة الملف: {duration_minutes:.1f} دقيقة\n\n"
+                f"{'المدة التقريبية' if pending_confirmation.get('provisional') else 'مدة الملف'}: "
+                f"{duration_minutes:.1f} دقيقة\n\n"
                 f"**التكلفة المتوقعة: {ui.money(estimate.get('total_usd'))}**"
             )
+            if pending_confirmation.get("provisional"):
+                st.caption("بعد تنزيل الصوت سنحسب المدة الحقيقية ونتأكد من الرصيد قبل إرسال أي طلب إلى OpenAI.")
             if not budget.get("allowed", True):
                 st.error("الرصيد أو الميزانية أقل من التكلفة المتوقعة.")
 
@@ -342,7 +443,7 @@ def main() -> None:
                     "voice_style": voice_style,
                     "output_format": output_format,
                     "preflight_duration_seconds": pending_confirmation["duration_seconds"],
-                    "browser_user_agent": browser_user_agent,
+                    "duration_is_provisional": bool(pending_confirmation.get("provisional")),
                 }
                 if uploaded_file:
                     safe_name = storage.safe_filename(uploaded_file.name)
@@ -399,6 +500,7 @@ def main() -> None:
         if (
             latest_job
             and latest_job.get("status") in jobs.FINISHED_STATUSES
+            and latest_job.get("status") not in jobs.WAITING_STATUSES
             and not active_job
             and dismissed_job_id != latest_job.get("job_id")
         ):

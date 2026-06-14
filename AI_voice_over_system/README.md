@@ -110,8 +110,9 @@ data/jobs/{job_id}/logs/events.jsonl
 Both job logs can be downloaded from the **سجل التشخيص** section in the dashboard.
 API keys are redacted from structured logs.
 
-YouTube failures are categorized into authentication/cookies, private or unavailable
-video, JavaScript challenge runtime, network, ffmpeg, and general extraction errors.
+YouTube failures are recorded with stable types for authentication, cloud-IP blocking,
+PO Token requirements, invalid cookies, media HTTP 403, unavailable videos, EJS, and network errors.
+The **تشخيص اتصال YouTube** panel shows safe capability checks without exposing secrets.
 
 For public videos, no cookies should normally be required. For a private, age-restricted,
 or bot-check response, export a Netscape-format cookies file and set:
@@ -133,34 +134,38 @@ YT_DLP_COOKIES_BASE64 = "paste_the_base64_value_here"
 YT_DLP_PROXY = ""
 ```
 
-The dashboard detects each user's browser User-Agent automatically through
-`st.context.headers` and stores it with the background job. `YT_DLP_USER_AGENT` is only
-an optional server-side fallback; dashboard users do not need to enter it.
+The cloud app never reads or copies a dashboard visitor's browser identity. It ignores
+`YT_DLP_COOKIES_FROM_BROWSER`; Streamlit Cloud cannot inspect a browser running on another device.
+`YT_DLP_USER_AGENT`, cookies, and proxy values are optional server-side settings only.
 
-The app owner configures the cookies once; ordinary dashboard users do not provide
-cookies. Export fresh YouTube cookies in Netscape format. Cookie files are account credentials:
-never commit or share them. Some YouTube checks bind the browser session to its public
-IP. If fresh cookies still fail on Streamlit Cloud, `YT_DLP_PROXY` must use the same
-public IP where the cookies were refreshed, or the video must be uploaded directly.
+The project installs yt-dlp with EJS, Deno, and curl-cffi dependencies during deployment.
+It does not install runtimes while the app is running. Keep `YT_DLP_JS_RUNTIME=auto` unless
+you have supplied a specific runtime path.
 
-Do not commit cookie files. They are ignored by this repository. The project installs
-Deno from `requirements.txt`, finds its exact executable path, and passes it to
-`yt-dlp` automatically. Keep `YT_DLP_JS_RUNTIME=auto` unless you provide another runtime.
+The downloader uses at most three deterministic attempts: a configured PO Token provider,
+configured cookies, and one anonymous cloud attempt. It never claims a provider was used
+unless yt-dlp reported it. Retries are deliberately limited because repeating the same
+request does not repair a blocked cloud IP.
 
-Streamlit Cloud also installs Chromium with a private Xvfb display, `curl-cffi`, and the WPC PO-token
-provider. The downloader automatically tries `mweb` with a fresh per-video PO token,
-browser impersonation, and strict HLS retries. Incomplete fragment downloads are rejected.
+For an optional BgUtils provider, install `requirements-youtube-provider.txt`, run either
+its HTTP service or prepared script, and set `YT_DLP_POT_PROVIDER` plus the matching URL or
+script path. Merely installing the plugin is not enough. A PO Token may help, but it does
+not guarantee that YouTube will accept a Streamlit Cloud IP.
 
-If YouTube still returns HTTP 403 after Deno is active, the hosting IP or video may
-require authentication or a Proof-of-Origin token. The downloader automatically tries
-normal audio, the token-free embedded client, and low-bandwidth Safari HLS. If all three
-fail, upload the video directly or configure a valid cookies file and PO Token provider.
-Streamlit Cloud cannot read cookies directly from your local browser.
+When direct extraction is blocked, the job changes to **بانتظار ملف الصوت** instead of
+failing. Run the local helper on your computer, then upload the resulting MP3 to the same job:
 
-The earlier repeated local failures were caused by checking for a global `yt-dlp`
-executable while yt-dlp was installed only inside the project virtual environment.
-The downloader now uses the active Python module and validates any completed audio
-output before treating a nonzero tool exit as a failure.
+```powershell
+python tools/local_youtube_audio.py "https://www.youtube.com/watch?v=VIDEO_ID"
+python tools/local_youtube_audio.py "https://www.youtube.com/watch?v=VIDEO_ID" --browser chrome
+```
+
+The browser option is local and explicit. Cookie values are never printed. On Windows you
+can also use `tools/download_youtube_audio.ps1 -Url "..." -Browser chrome`.
+
+For a separately hosted downloader, set `YOUTUBE_EXTERNAL_DOWNLOADER_URL` and optionally
+`YOUTUBE_EXTERNAL_DOWNLOADER_TOKEN`. The endpoint receives a JSON request and may return
+audio bytes directly or JSON containing a temporary `signed_url`.
 
 ## Streamlit Cloud Limits
 
@@ -191,7 +196,11 @@ If the Streamlit process restarts, previous `queued` or `running` jobs are marke
 
 ## Cost Confirmation And Budget Guard
 
-The dashboard reads the actual source duration before starting. It then shows one confirmation message containing the duration and estimated total cost. The user must confirm before transcription, translation, or voice generation begins.
+For uploaded files, the dashboard reads the real duration before confirmation. For YouTube,
+it uses the entered approximate minutes and labels the first estimate as provisional; it does
+not make a separate YouTube probe. After a valid audio file exists, the worker reads the real
+duration and checks the configured balance before any OpenAI request. If the balance is too low,
+the same job waits until the balance setting is updated.
 
 The OpenAI account panel shows the cumulative cost recorded by this app. Translation uses API token counts. Speech and voice previews use text tokens and generated-audio tokens. Whisper transcription remains duration-based because `whisper-1` is priced per minute.
 
