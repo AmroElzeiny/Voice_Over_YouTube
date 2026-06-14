@@ -114,24 +114,80 @@ def _clear_failed_download(job_path: Path) -> None:
             candidate.unlink(missing_ok=True)
 
 
-def _download_strategies() -> list[dict[str, str | None]]:
-    return [
+def _wpc_browser_path() -> str | None:
+    for executable_name in ("chromium", "chromium-browser", "google-chrome", "chrome"):
+        executable = shutil.which(executable_name)
+        if executable:
+            return executable
+    return None
+
+
+def _xvfb_path() -> str | None:
+    return shutil.which("xvfb-run")
+
+
+def _impersonation_available() -> bool:
+    return importlib.util.find_spec("curl_cffi") is not None
+
+
+def _download_strategies() -> list[dict[str, object]]:
+    strategies: list[dict[str, object]] = [
         {
             "name": "default_audio",
             "format": "bestaudio/best",
-            "extractor_args": None,
+            "extra_args": [],
         },
         {
             "name": "embedded_audio",
             "format": "bestaudio/best",
-            "extractor_args": "youtube:player_client=web_embedded",
+            "extra_args": ["--extractor-args", "youtube:player_client=web_embedded"],
         },
+    ]
+    browser_path = _wpc_browser_path()
+    xvfb_path = _xvfb_path()
+    if browser_path and xvfb_path:
+        strategies.append(
+            {
+                "name": "mweb_po_token",
+                "format": "bestaudio/best",
+                "command_prefix": [xvfb_path, "-a"],
+                "extra_args": [
+                    "--extractor-args",
+                    "youtube:player_client=mweb",
+                    "--extractor-args",
+                    f"youtubepot-wpc:browser_path={browser_path}",
+                ],
+            }
+        )
+    hls_args = ["--extractor-args", "youtube:player_client=web_safari"]
+    strategies.append(
         {
             "name": "safari_hls",
             "format": "worst[protocol^=m3u8]/best[protocol^=m3u8]",
-            "extractor_args": "youtube:player_client=web_safari",
-        },
-    ]
+            "extra_args": hls_args,
+        }
+    )
+    if _impersonation_available():
+        strategies.extend(
+            [
+                {
+                    "name": "embedded_impersonated",
+                    "format": "bestaudio/best",
+                    "extra_args": [
+                        "--extractor-args",
+                        "youtube:player_client=web_embedded",
+                        "--impersonate",
+                        "chrome",
+                    ],
+                },
+                {
+                    "name": "safari_hls_fresh",
+                    "format": "worst[protocol^=m3u8]/best[protocol^=m3u8]",
+                    "extra_args": [*hls_args, "--impersonate", "safari"],
+                },
+            ]
+        )
+    return strategies
 
 
 def _materialize_secret_cookies(settings: Settings) -> Path | None:
@@ -179,15 +235,24 @@ def _classify_failure(stderr: str) -> tuple[str, str]:
         return ("youtube_unavailable", "الفيديو غير متاح أو محذوف أو محجوب في موقع الخادم.")
     if "unsupported url" in lowered:
         return ("youtube_unsupported_url", "صيغة رابط YouTube غير مدعومة.")
-    if "javascript runtime" in lowered or "challenge" in lowered:
-        return (
-            "youtube_js_runtime",
-            "تعذر تشغيل حماية JavaScript الخاصة بـ YouTube. أعد تشغيل التطبيق بعد اكتمال تثبيت Deno.",
-        )
-    if "http error 403" in lowered or "403: forbidden" in lowered:
+    if (
+        "http error 403" in lowered
+        or "403: forbidden" in lowered
+        or "downloaded file is empty" in lowered
+        or "fragment not found" in lowered
+    ):
         return (
             "youtube_forbidden",
-            "رفض YouTube كل طرق التنزيل من خادم الاستضافة. ارفع ملف الفيديو مباشرة، أو استخدم cookies صالحة مع مزود PO Token.",
+            "رفض YouTube ملفات الصوت من خادم الاستضافة حتى بعد المحاولات التلقائية وPO Token. ارفع الفيديو مباشرة أو استخدم proxy موثوقًا.",
+        )
+    if (
+        "no supported javascript runtime" in lowered
+        or "javascript runtime could not be found" in lowered
+        or "javascript runtime is unavailable" in lowered
+    ):
+        return (
+            "youtube_js_runtime",
+            "مشغل JavaScript غير متاح داخل الخادم. أعد تشغيل التطبيق بعد اكتمال تثبيت Deno.",
         )
     if "ffmpeg" in lowered and ("not found" in lowered or "not installed" in lowered):
         return ("youtube_ffmpeg_missing", "تم تنزيل الصوت لكن ffmpeg غير متاح لتحويله.")
@@ -302,6 +367,7 @@ def download_youtube_audio(
         "5",
         "--fragment-retries",
         "5",
+        "--abort-on-unavailable-fragments",
         "--extractor-retries",
         "3",
         "--retry-sleep",
@@ -337,10 +403,15 @@ def download_youtube_audio(
     )
     combined_output: list[str] = []
     last_return_code = 1
-    for attempt_number, strategy in enumerate(_download_strategies(), start=1):
-        args = [*base_args, "--format", str(strategy["format"])]
-        if strategy["extractor_args"]:
-            args.extend(["--extractor-args", str(strategy["extractor_args"])])
+    strategies = _download_strategies()
+    for attempt_number, strategy in enumerate(strategies, start=1):
+        args = [
+            *(str(item) for item in strategy.get("command_prefix", [])),
+            *base_args,
+            "--format",
+            str(strategy["format"]),
+        ]
+        args.extend(str(item) for item in strategy.get("extra_args", []))
         args.extend(access_args)
         args.append(url)
 
@@ -410,6 +481,6 @@ def download_youtube_audio(
         return_code=last_return_code,
         stderr_tail=stderr_tail,
         js_runtime=js_runtime or "none",
-        attempted_strategies=[strategy["name"] for strategy in _download_strategies()],
+        attempted_strategies=[strategy["name"] for strategy in strategies],
     )
     raise YouTubeError(friendly_message)

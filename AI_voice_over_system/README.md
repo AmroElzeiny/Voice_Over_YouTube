@@ -147,6 +147,10 @@ Do not commit cookie files. They are ignored by this repository. The project ins
 Deno from `requirements.txt`, finds its exact executable path, and passes it to
 `yt-dlp` automatically. Keep `YT_DLP_JS_RUNTIME=auto` unless you provide another runtime.
 
+Streamlit Cloud also installs Chromium with a private Xvfb display, `curl-cffi`, and the WPC PO-token
+provider. The downloader automatically tries `mweb` with a fresh per-video PO token,
+browser impersonation, and strict HLS retries. Incomplete fragment downloads are rejected.
+
 If YouTube still returns HTTP 403 after Deno is active, the hosting IP or video may
 require authentication or a Proof-of-Origin token. The downloader automatically tries
 normal audio, the token-free embedded client, and low-bandwidth Safari HLS. If all three

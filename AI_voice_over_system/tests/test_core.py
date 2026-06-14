@@ -145,9 +145,19 @@ class CoreBehaviorTests(unittest.TestCase):
             youtube._access_args(settings)
 
     def test_youtube_403_has_specific_message(self) -> None:
-        event, message = youtube._classify_failure("HTTP Error 403: Forbidden")
+        event, message = youtube._classify_failure(
+            "[jsc:deno] Solving JS challenges using deno\n"
+            "fragment not found; Skipping fragment 22\n"
+            "ERROR: The downloaded file is empty"
+        )
         self.assertEqual(event, "youtube_forbidden")
         self.assertIn("PO Token", message)
+
+    def test_missing_javascript_runtime_has_specific_message(self) -> None:
+        event, _message = youtube._classify_failure(
+            "No supported JavaScript runtime could be found"
+        )
+        self.assertEqual(event, "youtube_js_runtime")
 
     def test_youtube_download_retries_with_embedded_then_hls(self) -> None:
         source_dir = Path(self.temp_dir.name) / "job" / "source"
@@ -169,6 +179,8 @@ class CoreBehaviorTests(unittest.TestCase):
         with (
             patch("src.youtube.subprocess.run", side_effect=fake_run),
             patch("src.youtube._access_args", return_value=[]),
+            patch("src.youtube._wpc_browser_path", return_value=None),
+            patch("src.youtube._impersonation_available", return_value=False),
             patch("src.youtube.media.probe_duration", return_value=12.0),
         ):
             output = youtube.download_youtube_audio(
@@ -185,6 +197,24 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("youtube:player_client=web_safari", calls[2])
         hls_format = calls[2][calls[2].index("--format") + 1]
         self.assertIn("m3u8", hls_format)
+        self.assertIn("--abort-on-unavailable-fragments", calls[2])
+
+    def test_youtube_po_token_strategy_uses_headless_chromium(self) -> None:
+        with (
+            patch("src.youtube._wpc_browser_path", return_value="/usr/bin/chromium"),
+            patch("src.youtube._xvfb_path", return_value="/usr/bin/xvfb-run"),
+            patch("src.youtube._impersonation_available", return_value=True),
+        ):
+            strategies = youtube._download_strategies()
+
+        po_strategy = next(item for item in strategies if item["name"] == "mweb_po_token")
+        self.assertIn("youtube:player_client=mweb", po_strategy["extra_args"])
+        self.assertIn(
+            "youtubepot-wpc:browser_path=/usr/bin/chromium",
+            po_strategy["extra_args"],
+        )
+        self.assertEqual(po_strategy["command_prefix"], ["/usr/bin/xvfb-run", "-a"])
+        self.assertTrue(any(item["name"] == "safari_hls_fresh" for item in strategies))
 
     def test_youtube_worker_keeps_detected_browser_identity(self) -> None:
         job = {
@@ -546,9 +576,15 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn('audioop-lts; python_version >= "3.13"', requirements)
         self.assertIn("deno==2.8.3", requirements)
         self.assertIn("yt-dlp[default]>=2026.6.9", requirements)
+        self.assertIn("curl-cffi==0.13.0", requirements)
+        self.assertIn("yt-dlp-getpot-wpc==1.0.0", requirements)
 
         repository_root = project_root.parent
-        self.assertIn("ffmpeg", (repository_root / "packages.txt").read_text(encoding="utf-8"))
+        system_packages = (repository_root / "packages.txt").read_text(encoding="utf-8")
+        self.assertIn("ffmpeg", system_packages)
+        self.assertIn("chromium", system_packages)
+        self.assertIn("xvfb", system_packages)
+        self.assertIn("xauth", system_packages)
         self.assertTrue((repository_root / ".streamlit" / "config.toml").exists())
 
         app_source = (project_root / "app.py").read_text(encoding="utf-8")

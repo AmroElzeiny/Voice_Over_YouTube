@@ -1,1 +1,4 @@
 ffmpeg
+chromium
+xvfb
+xauth
