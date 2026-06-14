@@ -1,16 +1,19 @@
 import os
 from openai import OpenAI
 import re
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 # ==========================================
 # إعدادات المستخدم
 # ==========================================
-API_KEY = "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" # حط مفتاحك هنا
 INPUT_FILE = "lec2.srt"      # اسم الملف اللي طالع من Whisper
 OUTPUT_FILE = "lec2_hindi.srt"    # اسم الملف الهندي الجديد
 BATCH_SIZE = 20                      # عدد الجمل في كل شحنة (للسرعة والتوفير)
 
-client = OpenAI(api_key=API_KEY)
+load_dotenv(Path(__file__).resolve().parent / "AI_voice_over_system" / ".env")
+client = OpenAI()
 
 # ==========================================
 # الدوال المساعدة

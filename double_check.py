@@ -2,9 +2,13 @@ import whisper
 from openai import OpenAI
 from datetime import timedelta
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 # 1. إعدادات OpenAI
-client = OpenAI(api_key="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")
+load_dotenv(Path(__file__).resolve().parent / "AI_voice_over_system" / ".env")
+client = OpenAI()
 
 def format_timestamp(seconds):
     td = str(timedelta(seconds=seconds))
