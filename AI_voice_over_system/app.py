@@ -295,7 +295,8 @@ def main() -> None:
             )
             if fallback_too_large:
                 st.error(f"حجم الملف أكبر من الحد المسموح: {settings.max_upload_mb} MB.")
-            if st.button(
+            upload_col, cancel_col = st.columns(2)
+            if upload_col.button(
                 "رفع الصوت واستكمال العملية",
                 type="primary",
                 disabled=not fallback_audio or fallback_too_large,
@@ -328,6 +329,16 @@ def main() -> None:
                 worker.start_job_worker(settings, waiting_job["job_id"])
                 st.success("تم رفع الصوت. ستستكمل العملية الآن.")
                 st.rerun()
+            if cancel_col.button(
+                "إلغاء العملية",
+                type="secondary",
+                help="يلغي هذه العملية ولا يطلب رفع ملف صوت.",
+                key=f"cancel-needs-audio-{waiting_job['job_id']}",
+            ):
+                jobs.cancel_job(settings, waiting_job["job_id"])
+                st.session_state.pop("start_confirmation", None)
+                st.success("تم إلغاء العملية.")
+                st.rerun()
 
         if waiting_job and waiting_job.get("status") == "needs_budget":
             st.warning("توقفت العملية قبل استخدام OpenAI لأن الرصيد المحسوب غير كافٍ.")
@@ -343,6 +354,16 @@ def main() -> None:
                     error_message=None,
                 )
                 worker.start_job_worker(settings, waiting_job["job_id"])
+                st.rerun()
+            if st.button(
+                "إلغاء العملية",
+                type="secondary",
+                help="يلغي هذه العملية ولا يستخدم OpenAI.",
+                key=f"cancel-needs-budget-{waiting_job['job_id']}",
+            ):
+                jobs.cancel_job(settings, waiting_job["job_id"])
+                st.session_state.pop("start_confirmation", None)
+                st.success("تم إلغاء العملية.")
                 st.rerun()
 
         can_prepare = (
@@ -504,11 +525,22 @@ def main() -> None:
             and not active_job
             and dismissed_job_id != latest_job.get("job_id")
         ):
+            new_process_label = (
+                "بدء عملية جديدة"
+                if latest_job.get("status") == "completed"
+                else "إخفاء العملية والبدء من جديد"
+            )
+            new_process_help = (
+                "يخفي العملية المكتملة ويفتح المجال لعملية جديدة."
+                if latest_job.get("status") == "completed"
+                else "يخفي رسالة العملية السابقة."
+            )
             if st.button(
-                "مسح الرسالة والبدء من جديد",
-                help="يخفي رسالة العملية السابقة.",
+                new_process_label,
+                help=new_process_help,
             ):
                 st.session_state["dismissed_job_id"] = latest_job["job_id"]
+                st.session_state.pop("start_confirmation", None)
                 st.rerun()
 
     with st.container(border=True):

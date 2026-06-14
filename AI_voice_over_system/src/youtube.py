@@ -363,6 +363,7 @@ def _strategies(settings: Settings) -> list[dict[str, Any]]:
                     provider["extractor_arg"],
                 ],
                 "provider_expected": True,
+                "allow_plugins": True,
             }
         )
     if cookies_configured:
@@ -373,6 +374,7 @@ def _strategies(settings: Settings) -> list[dict[str, Any]]:
                 "include_cookies": True,
                 "extra_args": [],
                 "provider_expected": False,
+                "allow_plugins": False,
             }
         )
     if settings.yt_dlp_cloud_direct_enabled:
@@ -383,6 +385,7 @@ def _strategies(settings: Settings) -> list[dict[str, Any]]:
                 "include_cookies": False,
                 "extra_args": [],
                 "provider_expected": False,
+                "allow_plugins": False,
             }
         )
     return strategies[:3]
@@ -400,7 +403,7 @@ def _classify_failure(output: str, *, provider_ready: bool = False) -> tuple[str
         return YOUTUBE_VIDEO_RESTRICTED, "الفيديو خاص أو مقيّد ويحتاج صلاحية مناسبة."
     if "account cookies" in lowered or "cookies are no longer valid" in lowered:
         return YOUTUBE_COOKIE_INVALID, cloud_message
-    if "sign in to confirm" in lowered or "not a bot" in lowered:
+    if "login_required" in lowered or "sign in to confirm" in lowered or "not a bot" in lowered:
         return YOUTUBE_IP_REPUTATION_BLOCK, cloud_message
     if "po token" in lowered:
         if provider_ready:
@@ -629,6 +632,7 @@ def download_youtube_audio(
             settings.audio_bitrate.upper(),
             "--output",
             output_template,
+            *(["--no-plugin-dirs"] if not strategy.get("allow_plugins") else []),
             *strategy["extra_args"],
             *_common_args(settings, include_cookies=bool(strategy["include_cookies"])),
             url,

@@ -119,6 +119,12 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual(event, youtube.YOUTUBE_MEDIA_403)
         self.assertIn("رفع ملف الصوت", message)
 
+        login_event, login_message = youtube._classify_failure(
+            "web_safari player response playability status: LOGIN_REQUIRED"
+        )
+        self.assertEqual(login_event, youtube.YOUTUBE_IP_REPUTATION_BLOCK)
+        self.assertIn("خادم Streamlit", login_message)
+
     def test_po_message_does_not_claim_an_attempt_without_a_provider(self) -> None:
         event, message = youtube._classify_failure(
             "PO token required for this format",
@@ -162,6 +168,7 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual(output.name, "youtube_source.mp3")
         self.assertEqual(len(calls), 1)
         self.assertNotIn("--extractor-args", calls[0])
+        self.assertIn("--no-plugin-dirs", calls[0])
 
     def test_strategies_are_configured_and_capped_at_three(self) -> None:
         settings = replace(
@@ -180,6 +187,9 @@ class CoreBehaviorTests(unittest.TestCase):
             [item["name"] for item in strategies],
             ["configured_po_provider", "configured_cookies", "anonymous_cloud"],
         )
+        self.assertTrue(strategies[0]["allow_plugins"])
+        self.assertFalse(strategies[1]["allow_plugins"])
+        self.assertFalse(strategies[2]["allow_plugins"])
 
         with patch(
             "src.youtube._provider_configuration",
@@ -202,7 +212,7 @@ class CoreBehaviorTests(unittest.TestCase):
                 {
                     "returncode": 1,
                     "stdout": "",
-                    "stderr": "Sign in to confirm you're not a bot",
+                    "stderr": "web_safari player response playability status: LOGIN_REQUIRED",
                 },
             )()
 
@@ -314,6 +324,9 @@ class CoreBehaviorTests(unittest.TestCase):
             )
         self.assertEqual(loaded, expected_source)
         download.assert_not_called()
+        jobs.wait_for_local_audio(self.settings, job_id, "blocked again")
+        jobs.cancel_job(self.settings, job_id)
+        self.assertEqual(jobs.get_job(self.settings, job_id)["status"], "cancelled")
 
     def test_local_helper_uses_browser_cookies_only_when_requested(self) -> None:
         plain = build_ydl_options(Path(self.temp_dir.name))
@@ -707,6 +720,8 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertNotIn('ui.section_title("تقدير التكلفة")', app_source)
         self.assertNotIn('ui.section_title("إحصاءات التكلفة")', app_source)
         self.assertIn('"متابعة وبدء العمل"', app_source)
+        self.assertIn('"بدء عملية جديدة"', app_source)
+        self.assertIn('"إلغاء العملية"', app_source)
         self.assertNotIn("إنفاق هذا الشهر", app_source)
         self.assertIn('columns[1].metric("تكلفة كل الملفات"', app_source)
         self.assertIn('columns[3].metric("الرصيد المحسوب"', app_source)
