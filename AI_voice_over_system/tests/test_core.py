@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import io
 import json
+import base64
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -76,6 +77,33 @@ class CoreBehaviorTests(unittest.TestCase):
 
         self.assertEqual(runtime, "deno:/app/bin/deno")
         self.assertEqual(access_args[:2], ["--js-runtimes", "deno:/app/bin/deno"])
+
+    def test_youtube_cookie_secret_is_materialized_and_used(self) -> None:
+        cookie_text = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tsecret\n"
+        settings = replace(
+            self.settings,
+            base_dir=Path(self.temp_dir.name),
+            yt_dlp_cookies_base64=base64.b64encode(cookie_text.encode()).decode(),
+            yt_dlp_user_agent="Mozilla/5.0 Test Browser",
+            yt_dlp_proxy="http://user:password@proxy.example:8080",
+        )
+
+        with patch("src.youtube._detect_js_runtime", return_value=None):
+            args = youtube._access_args(settings)
+
+        cookies_path = Path(args[args.index("--cookies") + 1])
+        self.assertTrue(cookies_path.exists())
+        self.assertEqual(cookies_path.read_text(encoding="utf-8"), cookie_text)
+        self.assertIn("Mozilla/5.0 Test Browser", args)
+        self.assertIn("http://user:password@proxy.example:8080", args)
+
+    def test_invalid_youtube_cookie_secret_is_rejected(self) -> None:
+        settings = replace(self.settings, yt_dlp_cookies_base64="not-base64")
+        with (
+            patch("src.youtube._detect_js_runtime", return_value=None),
+            self.assertRaisesRegex(youtube.YouTubeError, "YT_DLP_COOKIES_BASE64"),
+        ):
+            youtube._access_args(settings)
 
     def test_youtube_403_has_specific_message(self) -> None:
         event, message = youtube._classify_failure("HTTP Error 403: Forbidden")
@@ -256,14 +284,25 @@ class CoreBehaviorTests(unittest.TestCase):
 
     def test_logging_redacts_api_keys(self) -> None:
         secret = "configured-test-secret-value-1234567890"
+        cookie_secret = "cookie-secret-value-abcdefghijklmnopqrstuvwxyz"
+        proxy_secret = "http://user:password@proxy.example:8080"
         settings = replace(
             self.settings,
             openai_api_key=secret,
+            yt_dlp_cookies_base64=cookie_secret,
+            yt_dlp_proxy=proxy_secret,
         )
-        log_event(settings, "redaction_test", f"Key value: {secret}")
+        log_event(
+            settings,
+            "redaction_test",
+            f"Key value: {secret}; cookies: {cookie_secret}; proxy: {proxy_secret}",
+        )
         content = settings.app_log_path.read_text(encoding="utf-8")
         self.assertNotIn(secret, content)
+        self.assertNotIn(cookie_secret, content)
+        self.assertNotIn(proxy_secret, content)
         self.assertIn("REDACTED_KEY", content)
+        self.assertIn("REDACTED_SECRET", content)
         close_logging(settings)
 
     def test_tts_block_grouping_preserves_segment_ids(self) -> None:
@@ -408,6 +447,7 @@ class CoreBehaviorTests(unittest.TestCase):
             ".env",
             "data/jobs/",
             "data/voice_samples/",
+            "data/private/",
             "__pycache__/",
             ".streamlit/secrets.toml",
         ):

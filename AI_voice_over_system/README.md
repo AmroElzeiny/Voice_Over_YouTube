@@ -120,6 +120,25 @@ or bot-check response, export a Netscape-format cookies file and set:
 YT_DLP_COOKIES_FILE=/secure/path/to/youtube_cookies.txt
 ```
 
+On Streamlit Cloud, encode the cookies file locally in PowerShell:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt"))
+```
+
+Then add these values in **App settings > Secrets**:
+
+```toml
+YT_DLP_COOKIES_BASE64 = "paste_the_base64_value_here"
+YT_DLP_USER_AGENT = "paste_the_full_browser_user_agent_here"
+YT_DLP_PROXY = ""
+```
+
+Export fresh YouTube cookies in Netscape format. Cookie files are account credentials:
+never commit or share them. Some YouTube checks bind the browser session to its public
+IP. If fresh cookies still fail on Streamlit Cloud, `YT_DLP_PROXY` must use the same
+public IP where the cookies were refreshed, or the video must be uploaded directly.
+
 Do not commit cookie files. They are ignored by this repository. The project installs
 Deno from `requirements.txt`, finds its exact executable path, and passes it to
 `yt-dlp` automatically. Keep `YT_DLP_JS_RUNTIME=auto` unless you provide another runtime.

@@ -20,6 +20,9 @@ def _redact_text(value: str, settings: Settings | None = None) -> str:
         for secret in (settings.openai_api_key, settings.openai_admin_key):
             if secret:
                 redacted = redacted.replace(secret, "[REDACTED_KEY]")
+        for secret in (settings.yt_dlp_cookies_base64, settings.yt_dlp_proxy):
+            if secret:
+                redacted = redacted.replace(secret, "[REDACTED_SECRET]")
     return redacted
 
 

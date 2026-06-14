@@ -82,6 +82,10 @@ def main() -> None:
                 help="ضع رابط فيديو YouTube صالحًا.",
             )
             st.info("استخدم فقط الفيديوهات التي تملكها أو لديك إذن واضح لمعالجتها.")
+            if settings.yt_dlp_cookies_file or settings.yt_dlp_cookies_base64:
+                st.caption("تم إعداد تسجيل دخول YouTube على الخادم.")
+            else:
+                st.caption("قد يطلب YouTube تسجيل الدخول عند التشغيل من استضافة سحابية.")
 
         source_signature = (
             input_mode,

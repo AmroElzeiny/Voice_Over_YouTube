@@ -230,7 +230,10 @@ class Settings:
     log_level: str
     yt_dlp_js_runtime: str
     yt_dlp_cookies_file: Path | None
+    yt_dlp_cookies_base64: str
     yt_dlp_cookies_from_browser: str
+    yt_dlp_user_agent: str
+    yt_dlp_proxy: str
     transcription_prompt: str
     translation_system_prompt: str
     translation_prompt_template: str
@@ -327,7 +330,10 @@ def load_settings() -> Settings:
         log_level=setting("LOG_LEVEL", "INFO").upper(),
         yt_dlp_js_runtime=setting("YT_DLP_JS_RUNTIME", "auto").lower(),
         yt_dlp_cookies_file=cookies_file,
+        yt_dlp_cookies_base64=setting("YT_DLP_COOKIES_BASE64", ""),
         yt_dlp_cookies_from_browser=setting("YT_DLP_COOKIES_FROM_BROWSER", ""),
+        yt_dlp_user_agent=setting("YT_DLP_USER_AGENT", ""),
+        yt_dlp_proxy=setting("YT_DLP_PROXY", ""),
         transcription_prompt=setting("OPENAI_TRANSCRIPTION_PROMPT", DEFAULT_TRANSCRIPTION_PROMPT)
         or DEFAULT_TRANSCRIPTION_PROMPT,
         translation_system_prompt=setting("TRANSLATION_SYSTEM_PROMPT", DEFAULT_TRANSLATION_SYSTEM_PROMPT)

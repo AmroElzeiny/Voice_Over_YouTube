@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -120,12 +123,44 @@ def _download_strategies() -> list[dict[str, str | None]]:
     ]
 
 
+def _materialize_secret_cookies(settings: Settings) -> Path | None:
+    if not settings.yt_dlp_cookies_base64:
+        return None
+    encoded = re.sub(r"\s+", "", settings.yt_dlp_cookies_base64)
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise YouTubeError("قيمة YT_DLP_COOKIES_BASE64 غير صالحة.") from exc
+    if len(payload) > 5 * 1024 * 1024:
+        raise YouTubeError("ملف YouTube cookies أكبر من الحد المسموح.")
+    try:
+        text = payload.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise YouTubeError("ملف YouTube cookies يجب أن يكون نصيًا بصيغة UTF-8.") from exc
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    first_line = text.splitlines()[0].strip() if text.splitlines() else ""
+    if first_line not in {"# HTTP Cookie File", "# Netscape HTTP Cookie File"}:
+        raise YouTubeError("ملف YouTube cookies ليس بصيغة Netscape الصحيحة.")
+
+    private_dir = settings.base_dir / "data" / "private"
+    private_dir.mkdir(parents=True, exist_ok=True)
+    cookies_path = private_dir / "youtube_cookies.txt"
+    normalized = text.rstrip("\n") + "\n"
+    if not cookies_path.exists() or cookies_path.read_text(encoding="utf-8") != normalized:
+        cookies_path.write_text(normalized, encoding="utf-8", newline="\n")
+    try:
+        os.chmod(cookies_path, 0o600)
+    except OSError:
+        pass
+    return cookies_path
+
+
 def _classify_failure(stderr: str) -> tuple[str, str]:
     lowered = stderr.lower()
     if "sign in to confirm" in lowered or "not a bot" in lowered or "cookies" in lowered:
         return (
             "youtube_auth_required",
-            "طلب YouTube تسجيل الدخول أو التحقق. أضف ملف cookies صالحًا عبر YT_DLP_COOKIES_FILE.",
+            "طلب YouTube تسجيل الدخول لأن خادم الاستضافة محظور. أضف YT_DLP_COOKIES_BASE64 وYT_DLP_USER_AGENT في Streamlit Secrets.",
         )
     if "private video" in lowered or "members-only" in lowered or "age-restricted" in lowered:
         return ("youtube_restricted", "الفيديو خاص أو مقيّد ويحتاج صلاحية وحساب YouTube مناسبًا.")
@@ -170,12 +205,17 @@ def _access_args(settings: Settings) -> list[str]:
         args.extend(["--js-runtimes", js_runtime])
     elif settings.yt_dlp_js_runtime and settings.yt_dlp_js_runtime != "auto":
         raise YouTubeError("مشغل JavaScript المحدد غير موجود. استخدم auto أو deno.")
-    if settings.yt_dlp_cookies_file:
-        if not settings.yt_dlp_cookies_file.exists():
+    cookies_path = settings.yt_dlp_cookies_file or _materialize_secret_cookies(settings)
+    if cookies_path:
+        if not cookies_path.exists():
             raise YouTubeError("ملف YouTube cookies غير موجود.")
-        args.extend(["--cookies", str(settings.yt_dlp_cookies_file)])
+        args.extend(["--cookies", str(cookies_path)])
     elif settings.yt_dlp_cookies_from_browser:
         args.extend(["--cookies-from-browser", settings.yt_dlp_cookies_from_browser])
+    if settings.yt_dlp_user_agent:
+        args.extend(["--user-agent", settings.yt_dlp_user_agent])
+    if settings.yt_dlp_proxy:
+        args.extend(["--proxy", settings.yt_dlp_proxy])
     return args
 
 
@@ -269,7 +309,13 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
         video_id=video_id,
         python_executable=sys.executable,
         js_runtime=js_runtime or "none",
-        cookies_configured=bool(settings.yt_dlp_cookies_file or settings.yt_dlp_cookies_from_browser),
+        cookies_configured=bool(
+            settings.yt_dlp_cookies_file
+            or settings.yt_dlp_cookies_base64
+            or settings.yt_dlp_cookies_from_browser
+        ),
+        user_agent_configured=bool(settings.yt_dlp_user_agent),
+        proxy_configured=bool(settings.yt_dlp_proxy),
     )
     combined_output: list[str] = []
     last_return_code = 1
