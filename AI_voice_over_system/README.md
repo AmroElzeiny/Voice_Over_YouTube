@@ -125,7 +125,9 @@ Deno from `requirements.txt`, finds its exact executable path, and passes it to
 `yt-dlp` automatically. Keep `YT_DLP_JS_RUNTIME=auto` unless you provide another runtime.
 
 If YouTube still returns HTTP 403 after Deno is active, the hosting IP or video may
-require authentication. Add a valid Netscape cookies file with `YT_DLP_COOKIES_FILE`;
+require authentication or a Proof-of-Origin token. The downloader automatically tries
+normal audio, the token-free embedded client, and low-bandwidth Safari HLS. If all three
+fail, upload the video directly or configure a valid cookies file and PO Token provider.
 Streamlit Cloud cannot read cookies directly from your local browser.
 
 The earlier repeated local failures were caused by checking for a global `yt-dlp`

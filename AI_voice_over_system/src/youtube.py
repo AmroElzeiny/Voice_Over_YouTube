@@ -94,6 +94,32 @@ def _candidate_audio(job_path: Path) -> Path | None:
     return None
 
 
+def _clear_failed_download(job_path: Path) -> None:
+    for candidate in job_path.glob("youtube_source*"):
+        if candidate.is_file():
+            candidate.unlink(missing_ok=True)
+
+
+def _download_strategies() -> list[dict[str, str | None]]:
+    return [
+        {
+            "name": "default_audio",
+            "format": "bestaudio/best",
+            "extractor_args": None,
+        },
+        {
+            "name": "embedded_audio",
+            "format": "bestaudio/best",
+            "extractor_args": "youtube:player_client=web_embedded",
+        },
+        {
+            "name": "safari_hls",
+            "format": "worst[protocol^=m3u8]/best[protocol^=m3u8]",
+            "extractor_args": "youtube:player_client=web_safari",
+        },
+    ]
+
+
 def _classify_failure(stderr: str) -> tuple[str, str]:
     lowered = stderr.lower()
     if "sign in to confirm" in lowered or "not a bot" in lowered or "cookies" in lowered:
@@ -115,7 +141,7 @@ def _classify_failure(stderr: str) -> tuple[str, str]:
     if "http error 403" in lowered or "403: forbidden" in lowered:
         return (
             "youtube_forbidden",
-            "رفض YouTube التنزيل من خادم الاستضافة. جرّب فيديو عامًا آخر، وإذا استمر الخطأ أضف ملف cookies صالحًا عبر YT_DLP_COOKIES_FILE.",
+            "رفض YouTube كل طرق التنزيل من خادم الاستضافة. ارفع ملف الفيديو مباشرة، أو استخدم cookies صالحة مع مزود PO Token.",
         )
     if "ffmpeg" in lowered and ("not found" in lowered or "not installed" in lowered):
         return ("youtube_ffmpeg_missing", "تم تنزيل الصوت لكن ffmpeg غير متاح لتحويله.")
@@ -205,12 +231,13 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
     job_path.mkdir(parents=True, exist_ok=True)
     video_id = youtube_video_id(url)
     output_template = str(job_path / "youtube_source.%(ext)s")
-    args = [
+    base_args = [
         sys.executable,
         "-m",
         "yt_dlp",
         "--no-playlist",
         "--restrict-filenames",
+        "--force-ipv4",
         "--no-progress",
         "--newline",
         "--retries",
@@ -221,8 +248,6 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
         "3",
         "--retry-sleep",
         "http:linear=1::2",
-        "--format",
-        "bestaudio/best",
         "--extract-audio",
         "--audio-format",
         "mp3",
@@ -233,8 +258,7 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
     ]
 
     js_runtime = _detect_js_runtime(settings)
-    args.extend(_access_args(settings))
-    args.append(url)
+    access_args = _access_args(settings)
 
     log_event(
         settings,
@@ -247,39 +271,70 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
         js_runtime=js_runtime or "none",
         cookies_configured=bool(settings.yt_dlp_cookies_file or settings.yt_dlp_cookies_from_browser),
     )
-    try:
-        result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
-    except OSError as exc:
+    combined_output: list[str] = []
+    last_return_code = 1
+    for attempt_number, strategy in enumerate(_download_strategies(), start=1):
+        args = [*base_args, "--format", str(strategy["format"])]
+        if strategy["extractor_args"]:
+            args.extend(["--extractor-args", str(strategy["extractor_args"])])
+        args.extend(access_args)
+        args.append(url)
+
         log_event(
             settings,
-            "youtube_process_start_failed",
-            str(exc),
-            level="ERROR",
+            "youtube_download_attempt",
+            "Trying a YouTube download strategy.",
             job_id=job_path.parent.name,
             job_path=job_path.parent,
             video_id=video_id,
+            attempt=attempt_number,
+            strategy=strategy["name"],
         )
-        raise YouTubeError("تعذر تشغيل أداة تنزيل YouTube داخل بيئة التطبيق.") from exc
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            log_event(
+                settings,
+                "youtube_process_start_failed",
+                str(exc),
+                level="ERROR",
+                job_id=job_path.parent.name,
+                job_path=job_path.parent,
+                video_id=video_id,
+            )
+            raise YouTubeError("تعذر تشغيل أداة تنزيل YouTube داخل بيئة التطبيق.") from exc
 
-    _append_command_log(log_path, args, result.stdout, result.stderr)
-    audio_path = _candidate_audio(job_path)
-    if audio_path:
-        log_event(
-            settings,
-            "youtube_download_completed",
-            "YouTube audio file validated.",
-            job_id=job_path.parent.name,
-            job_path=job_path.parent,
-            video_id=video_id,
-            return_code=result.returncode,
-            output_file=audio_path.name,
-            output_bytes=audio_path.stat().st_size,
-            duration_seconds=media.probe_duration(audio_path),
-        )
-        return audio_path
+        _append_command_log(log_path, args, result.stdout, result.stderr)
+        combined_output.extend([result.stderr, result.stdout])
+        last_return_code = result.returncode
+        audio_path = _candidate_audio(job_path)
+        if audio_path:
+            log_event(
+                settings,
+                "youtube_download_completed",
+                "YouTube audio file validated.",
+                job_id=job_path.parent.name,
+                job_path=job_path.parent,
+                video_id=video_id,
+                return_code=result.returncode,
+                strategy=strategy["name"],
+                output_file=audio_path.name,
+                output_bytes=audio_path.stat().st_size,
+                duration_seconds=media.probe_duration(audio_path),
+            )
+            return audio_path
+        _clear_failed_download(job_path)
 
-    event, friendly_message = _classify_failure(result.stderr + "\n" + result.stdout)
-    stderr_tail = re.sub(r"\s+", " ", (result.stderr or result.stdout)[-2000:]).strip()
+    failure_output = "\n".join(combined_output)
+    event, friendly_message = _classify_failure(failure_output)
+    stderr_tail = re.sub(r"\s+", " ", failure_output[-2000:]).strip()
     log_event(
         settings,
         event,
@@ -288,8 +343,9 @@ def download_youtube_audio(url: str, job_path: Path, settings: Settings, log_pat
         job_id=job_path.parent.name,
         job_path=job_path.parent,
         video_id=video_id,
-        return_code=result.returncode,
+        return_code=last_return_code,
         stderr_tail=stderr_tail,
         js_runtime=js_runtime or "none",
+        attempted_strategies=[strategy["name"] for strategy in _download_strategies()],
     )
     raise YouTubeError(friendly_message)

@@ -80,7 +80,44 @@ class CoreBehaviorTests(unittest.TestCase):
     def test_youtube_403_has_specific_message(self) -> None:
         event, message = youtube._classify_failure("HTTP Error 403: Forbidden")
         self.assertEqual(event, "youtube_forbidden")
-        self.assertIn("cookies", message)
+        self.assertIn("PO Token", message)
+
+    def test_youtube_download_retries_with_embedded_then_hls(self) -> None:
+        source_dir = Path(self.temp_dir.name) / "job" / "source"
+        log_path = Path(self.temp_dir.name) / "job" / "youtube.log"
+        calls: list[list[str]] = []
+
+        def fake_run(args, **_kwargs):
+            calls.append(args)
+            if len(calls) == 3:
+                source_dir.mkdir(parents=True, exist_ok=True)
+                (source_dir / "youtube_source.mp3").write_bytes(b"x" * 2048)
+                return type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+            return type(
+                "Completed",
+                (),
+                {"returncode": 1, "stdout": "", "stderr": "HTTP Error 403: Forbidden"},
+            )()
+
+        with (
+            patch("src.youtube.subprocess.run", side_effect=fake_run),
+            patch("src.youtube._access_args", return_value=[]),
+            patch("src.youtube.media.probe_duration", return_value=12.0),
+        ):
+            output = youtube.download_youtube_audio(
+                "https://youtu.be/abc123",
+                source_dir,
+                self.settings,
+                log_path,
+            )
+
+        self.assertEqual(output.name, "youtube_source.mp3")
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn("--extractor-args", calls[0])
+        self.assertIn("youtube:player_client=web_embedded", calls[1])
+        self.assertIn("youtube:player_client=web_safari", calls[2])
+        hls_format = calls[2][calls[2].index("--format") + 1]
+        self.assertIn("m3u8", hls_format)
 
     def test_uploaded_duration_uses_ffprobe_and_restores_stream(self) -> None:
         uploaded = io.BytesIO(b"fake media")
